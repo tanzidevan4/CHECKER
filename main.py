@@ -12,9 +12,17 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
         await update.message.reply_text("Usage: /login <SID> <TOKEN>")
         return
+
     sid, token = context.args
-    sessions[update.effective_user.id] = {"sid": sid, "token": token}
-    await update.message.reply_text("✅ Logged in successfully!")
+    client = Client(sid, token)
+
+    try:
+        # Test authentication: fetch account info
+        account = client.api.accounts(sid).fetch()
+        sessions[update.effective_user.id] = {"sid": sid, "token": token}
+        await update.message.reply_text(f"✅ Logged in as: {account.friendly_name}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Login failed: {e}")
 
 # 🚪 /logout
 async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,7 +116,11 @@ async def inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = Client(sid, token)
 
     filter_number = context.args[0] if context.args else None
-    messages = client.messages.list(limit=10)
+    try:
+        messages = client.messages.list(limit=10)
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error: {e}")
+        return
 
     if not messages:
         await update.message.reply_text("📭 No SMS received yet.")
