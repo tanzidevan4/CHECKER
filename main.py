@@ -3,33 +3,24 @@ import random
 import logging
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from twilio.rest import Client
 
-# -------------------
-# CONFIG
-# -------------------
-API_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-
+API_TOKEN = "8335359553:AAELrv53ilDiS6vxU3O4b6hy_6vP8KjiXO0"
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# -------------------
-# STORAGE (memory only, production এ database ব্যবহার করো)
-# -------------------
 user_sessions = {}
 
-# Load area codes
 with open("us_ca_areacodes.json", "r") as f:
     AREA_CODES = json.load(f)
 
 
-# -------------------
-# HELPER FUNCTIONS
-# -------------------
 def get_main_menu(logged_in=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(KeyboardButton("📞 Buy Number"))
     kb.add(KeyboardButton("🎲 Random Area Code"))
+    kb.add(KeyboardButton("📩 My SMS"))
     if logged_in:
         kb.add(KeyboardButton("🚪 Logout"))
     else:
@@ -41,14 +32,12 @@ def get_random_area_code():
     return random.choice(list(AREA_CODES.keys()))
 
 
-def get_numbers_for_area(area_code: str):
-    # Demo numbers, বাস্তবে এখানে Twilio API call হবে
-    return [f"+1{area_code}{random.randint(2000000, 9999999)}" for _ in range(5)]
+def get_twilio_client(user_id):
+    sid = user_sessions[user_id]["sid"]
+    token = user_sessions[user_id]["token"]
+    return Client(sid, token)
 
 
-# -------------------
-# HANDLERS
-# -------------------
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
@@ -75,11 +64,50 @@ async def buy_number(message: types.Message):
 
 @dp.message_handler(lambda m: m.text == "🎲 Random Area Code")
 async def random_area(message: types.Message):
+    user_id = message.from_user.id
+    if not user_sessions.get(user_id, {}).get("logged_in", False):
+        await message.answer("❌ প্রথমে লগইন করুন।")
+        return
+
     area = get_random_area_code()
     await message.answer(f"🎲 Random Area Code: {area}\n\nএখন নাম্বার খোঁজা হচ্ছে...")
-    numbers = get_numbers_for_area(area)
+
+    client = get_twilio_client(user_id)
+    numbers = client.available_phone_numbers("US").local.list(
+        area_code=area,
+        sms_enabled=True,
+        voice_enabled=True,
+        limit=30
+    )
+
+    if not numbers:
+        await message.answer("❌ কোনো নম্বর পাওয়া যায়নি।")
+        return
+
     for num in numbers:
-        await message.answer(num)
+        await message.answer(num.phone_number)
+
+
+@dp.message_handler(lambda m: m.text == "📩 My SMS")
+async def my_sms(message: types.Message):
+    user_id = message.from_user.id
+    if not user_sessions.get(user_id, {}).get("logged_in", False):
+        await message.answer("❌ প্রথমে লগইন করুন।")
+        return
+
+    client = get_twilio_client(user_id)
+    try:
+        sms_list = client.messages.list(limit=5)  # সর্বশেষ ৫টা SMS
+        if not sms_list:
+            await message.answer("📭 এখনো কোনো SMS আসেনি।")
+            return
+
+        for sms in sms_list:
+            await message.answer(
+                f"📩 <b>From:</b> {sms.from_}\n<b>To:</b> {sms.to}\n📝 {sms.body}"
+            )
+    except Exception as e:
+        await message.answer(f"❌ SMS আনতে সমস্যা: {e}")
 
 
 @dp.message_handler()
@@ -87,34 +115,60 @@ async def handle_all(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
 
-    # Check login input
     if text.startswith("AC") and " " in text:
         sid, token = text.split(" ", 1)
-        # এখানে Twilio API দিয়ে validate করতে হবে (ডেমোতে skip)
+        try:
+            client = Client(sid, token)
+            client.api.accounts(sid).fetch()
+        except Exception as e:
+            await message.answer(f"❌ Login ব্যর্থ: {e}")
+            return
+
         user_sessions[user_id] = {"logged_in": True, "sid": sid, "token": token}
         await message.answer(f"🎉 Login সফল!\n✅ Account: <b>{sid}</b>", reply_markup=get_main_menu(True))
         return
 
-    # Area code input
-    if text.isdigit() and len(text) in [3]:
+    if text.isdigit() and len(text) == 3:
+        if not user_sessions.get(user_id, {}).get("logged_in", False):
+            await message.answer("❌ প্রথমে লগইন করুন।")
+            return
+
         area = text
         if area not in AREA_CODES:
             await message.answer("❌ অবৈধ এরিয়া কোড!")
             return
+
         await message.answer(f"📍 {AREA_CODES[area]} ({area}) এর জন্য পাওয়া নাম্বার সমূহঃ")
-        numbers = get_numbers_for_area(area)
+
+        client = get_twilio_client(user_id)
+        numbers = client.available_phone_numbers("US").local.list(
+            area_code=area,
+            sms_enabled=True,
+            voice_enabled=True,
+            limit=30
+        )
+
+        if not numbers:
+            await message.answer("❌ কোনো নম্বর পাওয়া যায়নি।")
+            return
+
         for num in numbers:
-            await message.answer(num)
+            await message.answer(num.phone_number)
         return
 
-    # Buy number (user just sends number)
     if text.startswith("+1") and text[2:].isdigit():
-        await message.answer(f"✅ নাম্বার সফলভাবে কেনা হয়েছে!\n📞 {text}\n\n👁️ View SMS\n🔄 আবার চেষ্টা করুন")
+        if not user_sessions.get(user_id, {}).get("logged_in", False):
+            await message.answer("❌ প্রথমে লগইন করুন।")
+            return
+
+        client = get_twilio_client(user_id)
+        try:
+            purchased = client.incoming_phone_numbers.create(phone_number=text)
+            await message.answer(f"✅ নাম্বার সফলভাবে কেনা হয়েছে!\n📞 {purchased.phone_number}")
+        except Exception as e:
+            await message.answer(f"❌ কেনা যায়নি: {e}")
         return
 
 
-# -------------------
-# RUN
-# -------------------
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
