@@ -6,9 +6,9 @@ import re
 from telegram.ext import Application
 
 # --- CONFIG ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN",)
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SMS_API_URL = "http://147.135.212.197/crapi/had/viewstats"
-SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN",)
+SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN")
 GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID"))
 POLL_INTERVAL = 10
 RECORDS = 50
@@ -76,16 +76,19 @@ async def poll_sms(app):
         await asyncio.sleep(POLL_INTERVAL)
 
 async def main():
-    if BOT_TOKEN.startswith("<") or SMS_API_TOKEN.startswith("<"):
-        raise RuntimeError("Please set BOT_TOKEN, SMS_API_TOKEN, and GROUP_CHAT_ID")
+    if not all([BOT_TOKEN, SMS_API_TOKEN, GROUP_CHAT_ID]):
+        raise RuntimeError("Please set BOT_TOKEN, SMS_API_TOKEN, and GROUP_CHAT_ID environment variables")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
     async def on_startup(app):
-        app.create_task(poll_sms(app))
+        # Using create_task is better for background tasks within the application context
+        loop = asyncio.get_running_loop()
+        loop.create_task(poll_sms(app))
 
     app.post_init = on_startup
     await app.run_polling()
 
 if __name__ == "__main__":
-   app.run_polling()
+   # এই অংশটি ঠিক করা হয়েছে
+   asyncio.run(main())
