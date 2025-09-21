@@ -9,7 +9,7 @@ from telegram.ext import Application
 BOT_TOKEN = os.environ.get("BOT_TOKEN",)
 SMS_API_URL = "http://147.135.212.197/crapi/had/viewstats"
 SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN",)
-GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID")
+GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID"))
 POLL_INTERVAL = 10
 RECORDS = 50
 # --------------
