@@ -14,7 +14,9 @@ POLL_INTERVAL = 10
 RECORDS = 50
 # --------------
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 seen = set()
@@ -22,7 +24,7 @@ seen = set()
 def mask_number(num: str) -> str:
     """ফোন নাম্বার মাস্ক করবে"""
     if len(num) <= 6:
-        return num  # ছোট হলে মাস্ক না করাই ভালো
+        return num
     return num[:3] + "****" + num[-3:]
 
 def extract_otp(message: str) -> str:
@@ -44,51 +46,77 @@ async def fetch_sms():
             logger.error("Fetch error: %s", e)
             return []
 
-async def poll_sms(app):
+async def poll_sms(app: Application):
+    """Continuously polls for new SMS and sends them to the Telegram group."""
     while True:
-        messages = await fetch_sms()
-        for sms in reversed(messages):
-            sms_id = f"{sms['dt']}_{sms['num']}_{hash(sms['message'])}"
-            if sms_id in seen:
-                continue
-            seen.add(sms_id)
+        try:
+            messages = await fetch_sms()
+            for sms in reversed(messages):
+                sms_id = f"{sms['dt']}_{sms['num']}_{hash(sms['message'])}"
+                if sms_id in seen:
+                    continue
+                seen.add(sms_id)
 
-            masked_num = mask_number(sms["num"])
-            otp = extract_otp(sms["message"])
+                masked_num = mask_number(sms["num"])
+                otp = extract_otp(sms["message"])
 
-            text = (
-                "✅ NEW OTP DETECTED\n\n"
-                f"⌚ Time: {sms['dt']}\n"
-                f"⚙️ Service: {sms['cli']}\n"
-                f"📱 Number: {masked_num}\n"
-                f"🔑 OTP: <code>{otp}</code>\n"  # Telegram code formatting (copyable)
-                f"📥 Full message:\n{sms['message']}"
-            )
+                text = (
+                    "✅ <b>NEW OTP DETECTED</b>\n\n"
+                    f"<b>⌚ Time:</b> {sms['dt']}\n"
+                    f"<b>⚙️ Service:</b> {sms['cli']}\n"
+                    f"<b>📱 Number:</b> {masked_num}\n"
+                    f"<b>🔑 OTP:</b> <code>{otp}</code>\n"
+                    f"<b>📥 Full message:</b>\n{sms['message']}"
+                )
 
-            try:
                 await app.bot.send_message(
                     chat_id=GROUP_CHAT_ID, text=text, parse_mode="HTML"
                 )
-                logger.info("Sent SMS: %s", sms_id)
-            except Exception as e:
-                logger.error("Send error: %s", e)
+                logger.info("Sent SMS to Telegram: %s", sms_id)
+
+        except Exception as e:
+            logger.error("An error occurred in poll_sms loop: %s", e)
 
         await asyncio.sleep(POLL_INTERVAL)
 
 async def main():
+    """Starts the bot and the SMS polling task."""
     if not all([BOT_TOKEN, SMS_API_TOKEN, GROUP_CHAT_ID]):
         raise RuntimeError("Please set BOT_TOKEN, SMS_API_TOKEN, and GROUP_CHAT_ID environment variables")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    async def on_startup(app):
-        # Using create_task is better for background tasks within the application context
-        loop = asyncio.get_running_loop()
-        loop.create_task(poll_sms(app))
+    # Start the SMS polling task in the background
+    sms_polling_task = asyncio.create_task(poll_sms(app))
 
-    app.post_init = on_startup
-    await app.run_polling()
+    # Run the bot and gracefully handle shutdown
+    try:
+        logger.info("Starting bot...")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        logger.info("Bot started successfully. Polling for SMS...")
+
+        # Keep the script running until interrupted (e.g., with Ctrl+C)
+        await asyncio.Event().wait()
+
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Stopping bot...")
+
+    finally:
+        # Gracefully shut down all tasks
+        sms_polling_task.cancel()
+        if app.updater and app.updater.running:
+            await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        logger.info("Bot stopped gracefully.")
+
 
 if __name__ == "__main__":
-   # এই অংশটি ঠিক করা হয়েছে
-   asyncio.run(main())
+   try:
+       asyncio.run(main())
+   except RuntimeError as e:
+       logger.error(f"Failed to start bot: {e}")
+   except KeyboardInterrupt:
+       logger.info("Process interrupted by user.")
