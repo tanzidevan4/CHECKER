@@ -1,68 +1,91 @@
-import os
+import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import Message
-from twilio.rest import Client
+import os
+import aiohttp
+import re
+from telegram.ext import Application
+
+# --- CONFIG ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN",)
+SMS_API_URL = "http://147.135.212.197/crapi/had/viewstats"
+SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN",)
+GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID")
+POLL_INTERVAL = 10
+RECORDS = 50
+# --------------
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-API_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  # Railway env variable
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+seen = set()
 
-user_sessions = {}
+def mask_number(num: str) -> str:
+    """ফোন নাম্বার মাস্ক করবে"""
+    if len(num) <= 6:
+        return num  # ছোট হলে মাস্ক না করাই ভালো
+    return num[:3] + "****" + num[-3:]
 
-@dp.message(F.text.startswith("/start") | F.text.startswith("/login"))
-async def start(message: Message):
-    await message.answer("Send your Twilio SID and Auth Token separated by space:\nSID AUTH_TOKEN")
+def extract_otp(message: str) -> str:
+    """SMS থেকে OTP নাম্বার বের করবে"""
+    matches = re.findall(r"\b\d{4,8}\b", message)
+    return matches[0] if matches else "N/A"
 
-@dp.message(lambda m: len(m.text.split()) == 2)
-async def save_twilio_credentials(message: Message):
-    sid, token = message.text.split()
-    try:
-        client = Client(sid, token)
-        account = client.api.accounts(sid).fetch()
-        user_sessions[message.from_user.id] = client
-        await message.answer(f"Login successful! Account Name: {account.friendly_name}")
-        await message.answer("Use /numbers to see your Twilio numbers.")
-    except Exception as e:
-        await message.answer(f"Failed to login: {e}")
+async def fetch_sms():
+    params = {"token": SMS_API_TOKEN, "records": RECORDS}
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(SMS_API_URL, params=params, timeout=20) as resp:
+                data = await resp.json()
+                if data.get("status") != "success":
+                    logger.warning("API Error: %s", data)
+                    return []
+                return data.get("data", [])
+        except Exception as e:
+            logger.error("Fetch error: %s", e)
+            return []
 
-@dp.message(F.text == "/numbers")
-async def list_numbers(message: Message):
-    client = user_sessions.get(message.from_user.id)
-    if not client:
-        await message.answer("Login first using /login")
-        return
-    numbers = client.incoming_phone_numbers.list()
-    if not numbers:
-        await message.answer("No numbers found.")
-    else:
-        msg = "Your Twilio Numbers:\n"
-        for n in numbers:
-            msg += f"- {n.phone_number}\n"
-        await message.answer(msg)
-        await message.answer("View messages: /messages <number>")
+async def poll_sms(app):
+    while True:
+        messages = await fetch_sms()
+        for sms in reversed(messages):
+            sms_id = f"{sms['dt']}_{sms['num']}_{hash(sms['message'])}"
+            if sms_id in seen:
+                continue
+            seen.add(sms_id)
 
-@dp.message(F.text.startswith("/messages"))
-async def view_messages(message: Message):
-    client = user_sessions.get(message.from_user.id)
-    if not client:
-        await message.answer("Login first using /login")
-        return
-    try:
-        _, number = message.text.split()
-        messages = client.messages.list(to=number, limit=10)
-        if not messages:
-            await message.answer("No messages on this number.")
-        else:
-            msg_text = f"Last {len(messages)} messages for {number}:\n"
-            for m in messages:
-                msg_text += f"From: {m.from_}\nBody: {m.body}\n---\n"
-            await message.answer(msg_text)
-    except Exception as e:
-        await message.answer(f"Error: {e}")
+            masked_num = mask_number(sms["num"])
+            otp = extract_otp(sms["message"])
+
+            text = (
+                "✅ NEW OTP DETECTED\n\n"
+                f"⌚ Time: {sms['dt']}\n"
+                f"⚙️ Service: {sms['cli']}\n"
+                f"📱 Number: {masked_num}\n"
+                f"🔑 OTP: <code>{otp}</code>\n"  # Telegram code formatting (copyable)
+                f"📥 Full message:\n{sms['message']}"
+            )
+
+            try:
+                await app.bot.send_message(
+                    chat_id=GROUP_CHAT_ID, text=text, parse_mode="HTML"
+                )
+                logger.info("Sent SMS: %s", sms_id)
+            except Exception as e:
+                logger.error("Send error: %s", e)
+
+        await asyncio.sleep(POLL_INTERVAL)
+
+async def main():
+    if BOT_TOKEN.startswith("<") or SMS_API_TOKEN.startswith("<"):
+        raise RuntimeError("Please set BOT_TOKEN, SMS_API_TOKEN, and GROUP_CHAT_ID")
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    async def on_startup(app):
+        app.create_task(poll_sms(app))
+
+    app.post_init = on_startup
+    await app.run_polling()
 
 if __name__ == "__main__":
-    from aiogram import executor
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
