@@ -19,11 +19,10 @@ RECORDS = 50
 OTP_MESSAGE_DELETE_DELAY = 180  # 3 minutes
 
 # --- ADMIN CONFIGURATION ---
-# আপনার টেলিগ্রাম ইউজার আইডি এখানে যোগ করুন। @userinfobot থেকে আইডি নিন।
 ADMIN_IDS = [int(admin_id) for admin_id in os.environ.get("ADMIN_IDS", "").split(',') if admin_id]
 
 # --- USER VERIFICATION CONFIGURATION ---
-VERIFY_USER = True 
+VERIFY_USER = True
 JOIN_LINKS = [
     {'name': '📢 Our Channel', 'url': 'https://t.me/your_channel_username', 'id': '@your_channel_username'},
     {'name': '💬 Discussion Group', 'url': 'https://t.me/your_group_username', 'id': '@your_group_username'}
@@ -31,22 +30,23 @@ JOIN_LINKS = [
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- GLOBAL DATA STORE & STATE ---
+# --- GLOBAL DATA ---
 NUMBER_DATA = {}
 seen_sms = set()
 user_chat_ids = set()
-assigned_numbers = {} 
+assigned_numbers = {}
 number_to_user_map = {}
 IS_MAINTENANCE_MODE = False
 
-# --- CONVERSATION HANDLER STATES ---
+# --- CONVERSATION STATES ---
 WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
 
-# --- HELPER & UI FUNCTIONS ---
+# --- HELPERS ---
 def extract_otp(message: str) -> str:
     matches = re.findall(r"\b\d{4,8}\b", message)
     return matches[0] if matches else "N/A"
@@ -65,7 +65,8 @@ def create_country_selection_keyboard() -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton("No numbers available 😔", callback_data="no_op")])
     else:
         for key, data in NUMBER_DATA.items():
-            buttons.append([InlineKeyboardButton(f"{data['button_text']} (Stock: {data.get('stock', 0)})", callback_data=f"country_{key}")])
+            buttons.append([InlineKeyboardButton(f"{data['button_text']} (Stock: {data.get('stock', 0)})",
+                                                 callback_data=f"country_{key}")])
     return InlineKeyboardMarkup(buttons)
 
 def create_number_options_keyboard(country_key: str) -> InlineKeyboardMarkup:
@@ -75,7 +76,7 @@ def create_number_options_keyboard(country_key: str) -> InlineKeyboardMarkup:
     ]]
     return InlineKeyboardMarkup(buttons)
 
-# --- CORE API FUNCTION ---
+# --- API FUNCTION ---
 async def fetch_sms():
     params = {"token": SMS_API_TOKEN, "records": RECORDS}
     async with aiohttp.ClientSession() as session:
@@ -102,14 +103,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if IS_MAINTENANCE_MODE:
         await update.message.reply_text("Bot is Under Maintenance, please Wait For A while 🔧")
         return
-        
+
     if chat_id in user_chat_ids:
         await update.message.reply_text("আপনি ইতিমধ্যেই আমাদের বট ব্যবহার করছেন।")
         await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
     elif VERIFY_USER:
         buttons = [[InlineKeyboardButton(link['name'], url=link['url'])] for link in JOIN_LINKS]
         buttons.append([InlineKeyboardButton("Verify ✅", callback_data="verify_join")])
-        await update.message.reply_text(f"Welcome {user.first_name}! 👋\n\nPlease Join Below to use the bot.", reply_markup=InlineKeyboardMarkup(buttons))
+        await update.message.reply_text(
+            f"Welcome {user.first_name}! 👋\n\nPlease Join Below to use the bot.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
     else:
         user_chat_ids.add(chat_id)
         await update.message.reply_text(f"Welcome {user.first_name} to Our Bot! 🎉")
@@ -120,7 +124,7 @@ async def verify_button_callback(update: Update, context: ContextTypes.DEFAULT_T
     if IS_MAINTENANCE_MODE:
         await query.answer("Bot is Under Maintenance 🔧", show_alert=True)
         return
-        
+
     user_id = query.from_user.id
     chat_id = query.effective_chat.id
     try:
@@ -149,26 +153,26 @@ async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         if chat_id in assigned_numbers:
             old_num = assigned_numbers.pop(chat_id)['number']
             number_to_user_map.pop(old_num, None)
-        
+
         country_data = NUMBER_DATA.get(country_key)
         if not country_data or not country_data.get('numbers'):
             await query.edit_message_text("Sorry, no numbers are available for this option. 😔")
             return
-        
+
         new_number = country_data['numbers'].pop(0)
         country_data['stock'] -= 1
         assigned_numbers[chat_id] = {'number': new_number, 'country_key': country_key}
         number_to_user_map[new_number] = chat_id
-        
+
         if not country_data['numbers']:
             button_name = country_data['button_text']
             del NUMBER_DATA[country_key]
-            notification = f"ℹ️ The file '{country_key}.txt' (Button: '{button_name}') is out of stock and auto-deleted."
             for admin_id in ADMIN_IDS:
                 try:
-                    await context.bot.send_message(chat_id=admin_id, text=notification)
-                except Exception as e:
-                    logger.warning(f"Failed to notify admin {admin_id}: {e}")
+                    await context.bot.send_message(chat_id=admin_id,
+                                                   text=f"ℹ️ File '{country_key}.txt' (Button: '{button_name}') is out of stock.")
+                except Exception:
+                    pass
 
         text = f"{country_data['button_text']} Number Assigned\n\nNumber: <code>{new_number}</code>"
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=create_number_options_keyboard(country_key))
@@ -180,9 +184,121 @@ async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif data == "change_country":
         await query.edit_message_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
 
-# --- ADMIN COMMANDS (same as before) ---
-# [Omitted here for brevity — your admin commands and polling logic remain unchanged]
-# (use the same code you already had for add, del, used, unused, pause, resume, status, etc.)
+# --- ADMIN COMMANDS ---
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id in ADMIN_IDS:
+        await update.message.reply_text("✅ Admin mode activated.")
+    else:
+        await update.message.reply_text("❌ Unauthorized.")
+
+async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return ConversationHandler.END
+    await update.message.reply_text("Send the .txt file with numbers.")
+    return WAITING_FOR_FILE
+
+async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    if not doc or not doc.file_name.endswith('.txt'):
+        await update.message.reply_text("Invalid file. Please send a .txt file.")
+        return WAITING_FOR_FILE
+    file_key = doc.file_name.lower().replace('.txt', '')
+    if file_key in NUMBER_DATA:
+        await update.message.reply_text("⚠️ A file with this name already exists.")
+    file = await doc.get_file()
+    content = await file.download_as_bytearray()
+    numbers = [f"+{line.strip()}" for line in content.decode('utf-8').splitlines() if line.strip()]
+    if not numbers:
+        await update.message.reply_text("File is empty.")
+        return ConversationHandler.END
+    context.user_data.update({'temp_numbers': numbers, 'temp_file_key': file_key})
+    await update.message.reply_text(f"✅ Found {len(numbers)} numbers. Now, provide the button name.")
+    return WAITING_FOR_NAME
+
+async def receive_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text
+    nums = context.user_data.get('temp_numbers')
+    key = context.user_data.get('temp_file_key')
+    NUMBER_DATA[key] = {
+        'button_text': name,
+        'numbers': nums,
+        'stock': len(nums),
+        'initial_stock': len(nums)
+    }
+    await update.message.reply_text(f"✅ Button '{name}' created with stock {len(nums)}.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Operation cancelled.")
+    return ConversationHandler.END
+
+async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    if not context.args:
+        if not NUMBER_DATA:
+            await update.message.reply_text("No files to delete.")
+            return
+        message = "Use `/del <filename>` to delete.\n\n<b>Available files:</b>\n"
+        for key, data in NUMBER_DATA.items():
+            message += f"• <code>{key}.txt</code> (Button: '{data['button_text']}')\n"
+        await update.message.reply_text(message, parse_mode="HTML")
+    else:
+        key = context.args[0].lower().replace('.txt', '')
+        if key in NUMBER_DATA:
+            name = NUMBER_DATA.pop(key)['button_text']
+            await update.message.reply_text(f"✅ File '{key}.txt' with button '{name}' deleted.")
+        else:
+            await update.message.reply_text("❌ File not found.")
+
+async def used_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    message = "<b>📊 Used Number Report</b>\n\n"
+    for key, data in NUMBER_DATA.items():
+        used = data.get('initial_stock', 0) - data.get('stock', 0)
+        message += f"• {key}.txt ({data['button_text']}) → Used: <b>{used}</b>\n"
+    await update.message.reply_text(message, parse_mode="HTML")
+
+async def unused_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    message = "<b>📦 Unused Number (Stock) Report</b>\n\n"
+    for key, data in NUMBER_DATA.items():
+        message += f"• {key}.txt ({data['button_text']}) → Remaining: <b>{data.get('stock', 0)}</b>\n"
+    await update.message.reply_text(message, parse_mode="HTML")
+
+async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global IS_MAINTENANCE_MODE
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    IS_MAINTENANCE_MODE = True
+    await update.message.reply_text("✅ Bot is now in maintenance mode.")
+
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global IS_MAINTENANCE_MODE
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    IS_MAINTENANCE_MODE = False
+    await update.message.reply_text("✅ Bot has been resumed.")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    if not NUMBER_DATA:
+        await update.message.reply_text("No number files are currently available.")
+        return
+    message = "<b>📋 Available List</b>\n\n"
+    for data in NUMBER_DATA.values():
+        message += f"• {data['button_text']}\n"
+    await update.message.reply_text(message, parse_mode="HTML")
 
 # --- BACKGROUND POLLING TASK ---
 async def poll_sms(app: Application):
@@ -201,38 +317,36 @@ async def poll_sms(app: Application):
                     if sms_id in seen_sms:
                         continue
                     seen_sms.add(sms_id)
-                    target_chat_id = number_to_user_map.pop(incoming_number)
-                    assigned_numbers.pop(target_chat_id, None)
-                    
+                    chat_id = number_to_user_map.pop(incoming_number)
+                    assigned_numbers.pop(chat_id, None)
                     otp = extract_otp(sms["message"])
-                    text = (f"✅ <b>NEW OTP DETECTED</b>\n\n<b>⌚ Time:</b> {sms['dt']}\n<b>⚙️ Service:</b> {sms['cli']}\n"
-                            f"<b>📱 Number:</b> <code>{incoming_number}</code>\n<b>🔑 OTP:</b> <code>{otp}</code>\n\n"
-                            f"<b>📥 Full Message:</b>\n<pre>{sms['message']}</pre>")
-                    
-                    asyncio.create_task(send_and_schedule_deletion(app.bot, target_chat_id, text, OTP_MESSAGE_DELETE_DELAY))
-                    await app.bot.send_message(chat_id=target_chat_id, text="Your number has been used and released. Select a new one 🌍")
+                    text = (f"✅ <b>NEW OTP DETECTED</b>\n\n⌚ {sms['dt']}\n⚙️ {sms['cli']}\n📱 <code>{incoming_number}</code>\n"
+                            f"🔑 <code>{otp}</code>\n\n📥 <pre>{sms['message']}</pre>")
+                    asyncio.create_task(send_and_schedule_deletion(app.bot, chat_id, text, OTP_MESSAGE_DELETE_DELAY))
+                    await app.bot.send_message(chat_id=chat_id, text="Your number has been used. Select a new one 🌍")
         except Exception as e:
-            logger.error(f"Error in poll_sms loop: {e}")
+            logger.error(f"Error in poll_sms: {e}")
 
-# --- MAIN APP ---
+# --- MAIN BOT FUNCTION ---
 async def main():
     if not all([BOT_TOKEN, SMS_API_TOKEN, ADMIN_IDS]):
         raise RuntimeError("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
-    
+
     app = Application.builder().token(BOT_TOKEN).build()
 
-    add_conv_handler = ConversationHandler(
+    add_conv = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
         states={
             WAITING_FOR_FILE: [MessageHandler(filters.Document.ALL, receive_file)],
-            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_button_name)],
+            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_button_name)]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
 
+    # Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(add_conv_handler)
+    app.add_handler(add_conv)
     app.add_handler(CommandHandler("del", delete_command))
     app.add_handler(CommandHandler("used", used_command))
     app.add_handler(CommandHandler("unused", unused_command))
@@ -243,16 +357,19 @@ async def main():
     app.add_handler(CallbackQueryHandler(user_button_handler))
 
     asyncio.create_task(poll_sms(app))
-
     logger.info("🚀 Bot is starting...")
     await app.run_polling()
 
 # --- RAILWAY-SAFE ENTRYPOINT ---
 if __name__ == "__main__":
     try:
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         if loop.is_running():
-            # Railway or async container already has a loop
             loop.create_task(main())
             loop.run_forever()
         else:
