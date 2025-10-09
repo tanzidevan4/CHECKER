@@ -11,7 +11,7 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters
 )
 
-# --- CONFIGURATION (No changes) ---
+# --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SMS_API_URL = "http://174.138.2.82/crapi/had/viewstats"
 SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN")
@@ -28,7 +28,7 @@ JOIN_LINKS = [
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- GLOBAL DATA STORE & STATE (No changes) ---
+# --- GLOBAL DATA STORE & STATE ---
 NUMBER_DATA = {}
 seen_sms = set()
 user_chat_ids = set()
@@ -223,7 +223,7 @@ async def poll_sms(application: Application):
         except Exception as e:
             logger.error(f"Error in poll_sms loop: {e}")
 
-# --- NEW: Flask App for Health Check ---
+# --- Flask App for Health Check ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
@@ -236,7 +236,6 @@ def main() -> None:
         logger.critical("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
         return
 
-    # Create the Telegram bot application
     app = Application.builder().token(BOT_TOKEN).post_init(poll_sms).build()
 
     # Register all handlers
@@ -259,16 +258,15 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(user_button_handler))
     
     # --- MODIFIED: Run Bot and Flask Server Together ---
-    # Run the bot in a separate thread
-    bot_thread = threading.Thread(target=app.run_polling)
+    # Run the bot in a separate thread, but disable signal handlers for this thread
+    bot_thread = threading.Thread(target=app.run_polling, kwargs={'stop_signals': None})
     bot_thread.start()
     
     logger.info("Bot polling started in a background thread.")
     
     # Run the Flask app in the main thread
-    # Railway provides the PORT environment variable.
     port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=port, debug=False)
 
 if __name__ == "__main__":
     main()
