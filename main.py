@@ -19,7 +19,6 @@ RECORDS = 50
 OTP_MESSAGE_DELETE_DELAY = 180  # 3 minutes
 
 # --- ADMIN CONFIGURATION ---
-# আপনার টেলিগ্রাম ইউজার আইডি এখানে যোগ করুন। @userinfobot থেকে আইডি নিন।
 ADMIN_IDS = [int(admin_id) for admin_id in os.environ.get("ADMIN_IDS", "").split(',') if admin_id]
 
 # --- USER VERIFICATION CONFIGURATION ---
@@ -30,10 +29,7 @@ JOIN_LINKS = [
 ]
 # --------------------------------
 
-# --- LOGGING SETUP ---
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- GLOBAL DATA STORE & STATE ---
@@ -57,8 +53,7 @@ async def send_and_schedule_deletion(bot, chat_id, text, delay_seconds):
         message = await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
         await asyncio.sleep(delay_seconds)
         await bot.delete_message(chat_id=chat_id, message_id=message.message_id)
-    except Exception:
-        pass # Ignore if message is already deleted or other errors
+    except Exception: pass
 
 def create_country_selection_keyboard() -> InlineKeyboardMarkup:
     buttons = []
@@ -86,28 +81,18 @@ async def fetch_sms():
                 data = await resp.json()
                 return data.get("data", []) if data.get("status") == "success" else []
         except Exception as e:
-            logger.error(f"SMS fetch error: {e}")
-            return []
+            logger.error(f"SMS fetch error: {e}"); return []
 
 # --- USER-FACING COMMANDS & CALLBACKS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-
-    # Admin verification bypass
+    user = update.effective_user; chat_id = update.effective_chat.id
     if user.id in ADMIN_IDS:
-        if chat_id not in user_chat_ids:
-            user_chat_ids.add(chat_id)
+        if chat_id not in user_chat_ids: user_chat_ids.add(chat_id)
         await update.message.reply_text(f"Welcome Admin, {user.first_name}! 👑 Verification bypassed.")
         await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
         return
-
-    # Maintenance check for regular users
     if IS_MAINTENANCE_MODE:
-        await update.message.reply_text("Bot is Under Maintenance, please Wait For A while 🔧")
-        return
-        
-    # Standard user logic
+        await update.message.reply_text("Bot is Under Maintenance, please Wait For A while 🔧"); return
     if chat_id in user_chat_ids:
         await update.message.reply_text("আপনি ইতিমধ্যেই আমাদের বট ব্যবহার করছেন।")
         await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
@@ -120,63 +105,48 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Welcome {user.first_name} to Our Bot! 🎉")
         await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
 
+# ... (বাকি সকল ফাংশন অপরিবর্তিত থাকবে) ...
+
 async def verify_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if IS_MAINTENANCE_MODE:
-        await query.answer("Bot is Under Maintenance 🔧", show_alert=True)
-        return
-        
-    user_id = query.from_user.id
-    chat_id = query.effective_chat.id
+        await query.answer("Bot is Under Maintenance 🔧", show_alert=True); return
+    user_id = query.from_user.id; chat_id = query.effective_chat.id
     try:
         is_member = all([(await context.bot.get_chat_member(link['id'], user_id)).status in ['member', 'administrator', 'creator'] for link in JOIN_LINKS])
         if is_member:
-            user_chat_ids.add(chat_id)
-            await query.answer()
+            user_chat_ids.add(chat_id); await query.answer()
             await query.edit_message_text("Thanks for joining! 🎉")
             await query.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
         else:
             await query.answer("❌ You haven't joined all channels/groups yet!", show_alert=True)
     except Exception as e:
-        logger.error(f"Verification error: {e}")
-        await query.answer("An error occurred.", show_alert=True)
+        logger.error(f"Verification error: {e}"); await query.answer("An error occurred.", show_alert=True)
 
 async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if IS_MAINTENANCE_MODE and query.from_user.id not in ADMIN_IDS:
-        await query.answer("Bot is Under Maintenance 🔧", show_alert=True)
-        return
-    await query.answer()
-    data = query.data
-    chat_id = query.effective_chat.id
-
+        await query.answer("Bot is Under Maintenance 🔧", show_alert=True); return
+    await query.answer(); data = query.data; chat_id = query.effective_chat.id
     async def assign_new_number(country_key):
         if chat_id in assigned_numbers:
             old_num = assigned_numbers.pop(chat_id)['number']
             if old_num in number_to_user_map: del number_to_user_map[old_num]
-        
         country_data = NUMBER_DATA.get(country_key)
         if not country_data or not country_data.get('numbers'):
-            await query.edit_message_text("Sorry, no numbers are available for this option. 😔")
-            return
-        
-        new_number = country_data['numbers'].pop(0)
-        country_data['stock'] -= 1
+            await query.edit_message_text("Sorry, no numbers are available for this option. 😔"); return
+        new_number = country_data['numbers'].pop(0); country_data['stock'] -= 1
         assigned_numbers[chat_id] = {'number': new_number, 'country_key': country_key}
         number_to_user_map[new_number] = chat_id
-        
         if not country_data['numbers']:
-            button_name = country_data['button_text']
-            del NUMBER_DATA[country_key]
+            button_name = country_data['button_text']; del NUMBER_DATA[country_key]
             notification = f"ℹ️ The file `'{country_key}.txt'` (Button: `'{button_name}'`) is out of stock and has been auto-deleted."
             for admin_id in ADMIN_IDS:
                 try: await context.bot.send_message(chat_id=admin_id, text=notification)
                 except Exception as e: logger.warning(f"Failed to notify admin {admin_id}: {e}")
-
         text = f"{country_data['button_text']} Number Assigned\n\nNumber: <code>{new_number}</code>"
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=create_number_options_keyboard(country_key))
         await query.message.reply_text(f"⏳ Waiting for an OTP for <code>{new_number}</code>.", parse_mode="HTML")
-
     if data.startswith("country_") or data.startswith("change_num_"):
         key = data.split("_", 1)[1] if data.startswith("country_") else data.split("_", 2)[2]
         await assign_new_number(key)
@@ -204,9 +174,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.update({'temp_numbers': numbers, 'temp_file_key': file_key})
     await update.message.reply_text(f"✅ Found {len(numbers)} numbers. Now, provide the button name."); return WAITING_FOR_NAME
 async def receive_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text
-    nums = context.user_data.get('temp_numbers')
-    key = context.user_data.get('temp_file_key')
+    name = update.message.text; nums = context.user_data.get('temp_numbers'); key = context.user_data.get('temp_file_key')
     initial_count = len(nums)
     NUMBER_DATA[key] = {'button_text': name, 'numbers': nums, 'stock': initial_count, 'initial_stock': initial_count}
     await update.message.reply_text(f"✅ Button '{name}' created with stock {initial_count}.")
@@ -249,27 +217,24 @@ async def unused_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global IS_MAINTENANCE_MODE
     if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("❌ Unauthorized."); return
-    IS_MAINTENANCE_MODE = True
-    await update.message.reply_text("✅ Bot is now in maintenance mode.")
+    IS_MAINTENANCE_MODE = True; await update.message.reply_text("✅ Bot is now in maintenance mode.")
 
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global IS_MAINTENANCE_MODE
     if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("❌ Unauthorized."); return
-    IS_MAINTENANCE_MODE = False
-    await update.message.reply_text("✅ Bot has been resumed.")
+    IS_MAINTENANCE_MODE = False; await update.message.reply_text("✅ Bot has been resumed.")
     
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("❌ Unauthorized."); return
     if not NUMBER_DATA:
-        await update.message.reply_text("No number files are currently available.")
-        return
+        await update.message.reply_text("No number files are currently available."); return
     message = "<b>📋 Available List</b>\n\n"
     for data in NUMBER_DATA.values():
         message += f"• {data['button_text']}\n"
     await update.message.reply_text(message, parse_mode="HTML")
 
 # --- BACKGROUND POLLING TASK ---
-async def poll_sms(app: Application):
+async def poll_sms(application: Application): # <--- MODIFICATION 1
     while True:
         await asyncio.sleep(POLL_INTERVAL)
         if not number_to_user_map: continue
@@ -284,14 +249,12 @@ async def poll_sms(app: Application):
                     seen_sms.add(sms_id)
                     target_chat_id = number_to_user_map.pop(incoming_number)
                     if target_chat_id in assigned_numbers: del assigned_numbers[target_chat_id]
-                    
                     otp = extract_otp(sms["message"])
                     text = (f"✅ <b>NEW OTP DETECTED</b>\n\n<b>⌚ Time:</b> {sms['dt']}\n<b>⚙️ Service:</b> {sms['cli']}\n"
                             f"<b>📱 Number:</b> <code>{incoming_number}</code>\n<b>🔑 OTP:</b> <code>{otp}</code>\n\n"
                             f"<b>📥 Full Message:</b>\n<pre>{sms['message']}</pre>")
-                    
-                    asyncio.create_task(send_and_schedule_deletion(app.bot, target_chat_id, text, OTP_MESSAGE_DELETE_DELAY))
-                    await app.bot.send_message(chat_id=target_chat_id, text="Your number has been used and is now released. Select a new one for your next task. 🌍")
+                    asyncio.create_task(send_and_schedule_deletion(application.bot, target_chat_id, text, OTP_MESSAGE_DELETE_DELAY))
+                    await application.bot.send_message(chat_id=target_chat_id, text="Your number has been used and is now released. Select a new one for your next task. 🌍")
         except Exception as e:
             logger.error(f"Error in poll_sms loop: {e}")
 
@@ -300,7 +263,8 @@ async def main():
     if not all([BOT_TOKEN, SMS_API_TOKEN, ADMIN_IDS]):
         raise RuntimeError("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
     
-    app = Application.builder().token(BOT_TOKEN).build()
+    # --- MODIFICATION 2 ---
+    app = Application.builder().token(BOT_TOKEN).post_init(poll_sms).build()
 
     add_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
@@ -321,9 +285,6 @@ async def main():
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CallbackQueryHandler(verify_button_callback, pattern="^verify_join$"))
     app.add_handler(CallbackQueryHandler(user_button_handler))
-    
-    # Start background task
-    asyncio.create_task(poll_sms(app))
     
     logger.info("Bot is starting...")
     await app.run_polling()
