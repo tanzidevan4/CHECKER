@@ -12,11 +12,11 @@ from telegram.error import BadRequest
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-SMS_API_URL = "http://174.138.2.82/crapi/had/viewstats"
+SMS_API_URL = "http://174.1 ৩৮.২.৮২/crapi/had/viewstats"
 SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN")
-POLL_INTERVAL = 8  # seconds
+POLL_INTERVAL = 8
 RECORDS = 50
-OTP_MESSAGE_DELETE_DELAY = 180  # 3 minutes
+OTP_MESSAGE_DELETE_DELAY = 180
 
 # --- ADMIN CONFIGURATION ---
 ADMIN_IDS = [int(admin_id) for admin_id in os.environ.get("ADMIN_IDS", "").split(',') if admin_id]
@@ -27,7 +27,6 @@ JOIN_LINKS = [
     {'name': '📢 Our Channel', 'url': 'https://t.me/your_channel_username', 'id': '@your_channel_username'},
     {'name': '💬 Discussion Group', 'url': 'https://t.me/your_group_username', 'id': '@your_group_username'}
 ]
-# --------------------------------
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,10 +39,9 @@ assigned_numbers = {}
 number_to_user_map = {}
 IS_MAINTENANCE_MODE = False
 
-# --- CONVERSATION HANDLER STATES ---
 WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
 
-# --- HELPER & UI FUNCTIONS ---
+# --- HELPER & UI FUNCTIONS (No changes) ---
 def extract_otp(message: str) -> str:
     matches = re.findall(r"\b\d{4,8}\b", message)
     return matches[0] if matches else "N/A"
@@ -71,7 +69,7 @@ def create_number_options_keyboard(country_key: str) -> InlineKeyboardMarkup:
     ]]
     return InlineKeyboardMarkup(buttons)
 
-# --- CORE API FUNCTION ---
+# --- CORE API FUNCTION (No changes) ---
 async def fetch_sms():
     params = {"token": SMS_API_TOKEN, "records": RECORDS}
     async with aiohttp.ClientSession() as session:
@@ -83,7 +81,7 @@ async def fetch_sms():
         except Exception as e:
             logger.error(f"SMS fetch error: {e}"); return []
 
-# --- USER-FACING COMMANDS & CALLBACKS ---
+# --- ALL COMMAND HANDLERS (No changes) ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; chat_id = update.effective_chat.id
     if user.id in ADMIN_IDS:
@@ -105,8 +103,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Welcome {user.first_name} to Our Bot! 🎉")
         await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
 
-# ... (বাকি সকল ফাংশন অপরিবর্তিত থাকবে) ...
-
+# ... (All other command handlers like verify_button_callback, user_button_handler, admin commands, etc. remain exactly the same) ...
 async def verify_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if IS_MAINTENANCE_MODE:
@@ -153,7 +150,6 @@ async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif data == "change_country":
         await query.edit_message_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
 
-# --- ADMIN-ONLY COMMANDS ---
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id in ADMIN_IDS: await update.message.reply_text("✅ Admin mode activated.")
     else: await update.message.reply_text("❌ Unauthorized.")
@@ -233,8 +229,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"• {data['button_text']}\n"
     await update.message.reply_text(message, parse_mode="HTML")
 
+
 # --- BACKGROUND POLLING TASK ---
-async def poll_sms(application: Application): # <--- MODIFICATION 1
+async def poll_sms(application: Application):
     while True:
         await asyncio.sleep(POLL_INTERVAL)
         if not number_to_user_map: continue
@@ -259,11 +256,13 @@ async def poll_sms(application: Application): # <--- MODIFICATION 1
             logger.error(f"Error in poll_sms loop: {e}")
 
 # --- MAIN APPLICATION SETUP ---
-async def main():
+# MODIFICATION 1: Changed to a synchronous function
+def main() -> None:
+    """Start the bot."""
     if not all([BOT_TOKEN, SMS_API_TOKEN, ADMIN_IDS]):
-        raise RuntimeError("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
-    
-    # --- MODIFICATION 2 ---
+        logger.critical("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
+        return
+
     app = Application.builder().token(BOT_TOKEN).post_init(poll_sms).build()
 
     add_conv_handler = ConversationHandler(
@@ -287,10 +286,9 @@ async def main():
     app.add_handler(CallbackQueryHandler(user_button_handler))
     
     logger.info("Bot is starting...")
-    await app.run_polling()
+    # This is a blocking call and will run the bot until it's stopped.
+    app.run_polling()
 
+# MODIFICATION 2: Changed how the script is executed
 if __name__ == "__main__":
-   try:
-       asyncio.run(main())
-   except RuntimeError as e:
-       logger.error(f"Failed to start bot: {e}")
+    main()
