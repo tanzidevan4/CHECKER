@@ -27,8 +27,8 @@ ADMIN_IDS = [int(i) for i in os.environ.get("ADMIN_IDS", "").split(",") if i]
 # --- USER VERIFICATION ---
 VERIFY_USER = True
 JOIN_LINKS = [
-    {"name": "📢 Our Channel", "url": "https://t.me/your_channel_username", "id": "@your_channel_username"},
-    {"name": "💬 Discussion Group", "url": "https://t.me/your_group_username", "id": "@your_group_username"},
+    {"name": "📢 Our Channel", "url": "https://t.me/+bey252hj-qU5ZGNl", "id": "@your_channel_username"},
+    {"name": "💬 Discussion Group", "url": "https://t.me/+1mrti6CrDyQ5MDY1", "id": "@your_group_username"},
 ]
 
 # --- LOGGING ---
