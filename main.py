@@ -1,170 +1,303 @@
-import logging
+import os
 import re
+import asyncio
+import secrets
 from datetime import datetime
-from tempmail import TempMail
+from typing import Dict, Any, List, Optional
+
+import aiohttp
+from aiohttp import ClientSession
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler
-
-# লগিং চালু করা হচ্ছে
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    CallbackQueryHandler,
 )
-logger = logging.getLogger(__name__)
 
-# স্টার্ট কমান্ড হ্যান্ডলার
-def start(update: Update, context: CallbackContext) -> None:
-    """/start কমান্ড দিলে এই ফাংশনটি কাজ করবে।"""
-    welcome_message = """
-👋 *স্বাগতম!*
+API_BASE = "https://api.mail.tm"
 
-আমি একটি স্বয়ংক্রিয় টেম্পোরারি ইমেইল বট।
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
 
-আমার মাধ্যমে আপনি অস্থায়ী ইমেইল ঠিকানা তৈরি করতে এবং ইমেইল গ্রহণ করতে পারবেন।
+if not BOT_TOKEN:
+    raise RuntimeError("Environment variable BOT_TOKEN is required. Set it in Railway environment variables.")
 
-/getnew কমান্ড ব্যবহার করে একটি নতুন ইমেইল ঠিকানা তৈরি করুন।
-    """
-    update.message.reply_text(welcome_message, parse_mode='Markdown')
+# --- MailTM client (minimal) ---
+class MailTMClient:
+    def __init__(self, session: ClientSession):
+        self.session = session
 
-# নতুন ইমেইল তৈরি করার ফাংশন
-def generate_new_email(update: Update, context: CallbackContext) -> None:
-    """একটি নতুন অস্থায়ী ইমেইল ঠিকানা তৈরি করে।"""
+    async def get_domains(self) -> List[Dict[str, Any]]:
+        url = f"{API_BASE}/api/v1/domains"
+        async with self.session.get(url) as r:
+            r.raise_for_status()
+            data = await r.json()
+            return data.get("hydra:member", [])
+
+    async def create_account(self, address: Optional[str] = None, password: Optional[str] = None) -> Dict[str, str]:
+        if not password:
+            password = secrets.token_urlsafe(12)
+        if not address:
+            domains = await self.get_domains()
+            if not domains:
+                raise RuntimeError("No mail.tm domains available")
+            domain = secrets.choice(domains)["domain"]
+            username = secrets.token_hex(6)
+            address = f"{username}@{domain}"
+
+        payload = {"address": address, "password": password}
+        url = f"{API_BASE}/api/v1/accounts"
+        async with self.session.post(url, json=payload) as r:
+            # mail.tm returns 201 on create, or 400/409 if exists; we'll accept 200/201
+            text = await r.text()
+            if r.status not in (200, 201):
+                # If account exists, still return the chosen address/password (some domains allow create even if exists)
+                raise RuntimeError(f"Create account failed: {r.status} {text}")
+        return {"address": address, "password": password}
+
+    async def create_token(self, address: str, password: str) -> str:
+        url = f"{API_BASE}/api/v1/token"
+        payload = {"address": address, "password": password}
+        async with self.session.post(url, json=payload) as r:
+            r.raise_for_status()
+            data = await r.json()
+            return data.get("token")
+
+    async def get_messages(self, token: str, page: int = 1) -> Dict[str, Any]:
+        url = f"{API_BASE}/api/v1/messages?page={page}"
+        headers = {"Authorization": f"Bearer {token}"}
+        async with self.session.get(url, headers=headers) as r:
+            r.raise_for_status()
+            return await r.json()
+
+    async def get_message(self, token: str, message_id: str) -> Dict[str, Any]:
+        url = f"{API_BASE}/api/v1/messages/{message_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        async with self.session.get(url, headers=headers) as r:
+            r.raise_for_status()
+            return await r.json()
+
+# --- In-memory per-user store ---
+# Structure:
+# user_data = {
+#   chat_id: {
+#       "address": str,
+#       "password": str,
+#       "token": str,
+#       "seen": set(message_id, ...),
+#       "last_getnew": datetime
+#   }
+# }
+user_data: Dict[int, Dict[str, Any]] = {}
+
+# --- OTP extraction regexes (tweakable) ---
+OTP_REGEXPS = [
+    re.compile(r"\b(\d{4,8})\b"),  # 4-8 digit standalone numbers
+    re.compile(r"code[:\s]*([0-9]{4,8})", re.I),
+    re.compile(r"verification code[:\s]*([0-9]{4,8})", re.I),
+]
+
+def extract_otp(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    for rx in OTP_REGEXPS:
+        m = rx.search(text)
+        if m:
+            return m.group(1)
+    return None
+
+def format_email_message(message: Dict[str, Any], mail_address: str) -> (str, Optional[str]):
+    # message fields commonly: id, from, subject, intro, text, html, createdAt
+    msg_id = message.get("id")
+    time_str = message.get("createdAt") or message.get("created_at") or datetime.utcnow().isoformat()
     try:
-        # temp-mail লাইব্রেরি ব্যবহার করে ইমেইল তৈরি
-        tm = TempMail()
-        email = tm.get_email()
+        # normalize iso +Z
+        dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+        time_fmt = dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        time_fmt = time_str
 
-        if not email or "@" not in email:
-            raise ValueError("API থেকে সঠিক ইমেইল পাওয়া যায়নি।")
+    from_field = message.get("from") or {}
+    sender = from_field.get("address") or from_field.get("name") or "Unknown"
 
-        # ব্যবহারকারীর জন্য ইমেইল ঠিকানা ও অন্যান্য ডেটা সংরক্ষণ করা
-        context.user_data['email'] = email
-        context.user_data['last_checked_ids'] = set()
-        context.user_data['tempmail_instance'] = tm
+    subject = message.get("subject", "")
+    # prioritize text, fallback to intro/html
+    body = message.get("text") or message.get("intro") or message.get("html") or ""
+    # limit body size to avoid sending giant messages
+    body_preview = body if len(body) <= 1500 else body[:1500] + "\n\n[...truncated]"
 
-        keyboard = [[InlineKeyboardButton("🔄 Change Email", callback_data='change_email')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    otp = extract_otp(body) or extract_otp(subject) or extract_otp(message.get("intro", ""))
 
-        message = f"✅ আপনার নতুন অস্থায়ী ইমেইল ঠিকানা:\n\n`{email}`\n\nএই ঠিকানায় কোনো ইমেইল এলে আমি আপনাকে জানিয়ে দেব।"
-        
-        # যদি কোনো ব্যবহারকারী বাটন থেকে কল করে, তাহলে মেসেজ এডিট হবে
-        if update.callback_query:
-            update.callback_query.edit_message_text(text=message, reply_markup=reply_markup, parse_mode='Markdown')
-        else: # যদি কমান্ড থেকে কল হয়
-            update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    formatted = (
+        f"📬 *New Email Received*\n"
+        f"🕰 Time: `{time_fmt}`\n"
+        f"✉️ Email: `{mail_address}`\n"
+        f"📤 From: `{sender}`\n"
+        f"📝 Subject: {subject or '_(no subject)_'}\n"
+    )
+    if otp:
+        formatted += f"🔑 OTP: `{otp}`\n"
+    formatted += f"---\n✉️ *Full Message:*\n```\n{body_preview}\n```"
+    return formatted, otp
 
-        # ব্যাকগ্রাউন্ডে ইনবক্স চেক করার জব সেট করা
-        job_name = str(update.effective_chat.id)
-        # পুরনো জব থাকলে রিমুভ করা
-        current_jobs = context.job_queue.get_jobs_by_name(job_name)
-        if current_jobs:
-            for job in current_jobs:
-                job.schedule_removal()
-        
-        context.job_queue.run_repeating(check_inbox, interval=15, first=0, context=update.effective_chat.id, name=job_name)
+# --- Telegram handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 *Nightmare Worker*\n\n"
+        "আমি তোমার temporary-email সহকারী। /getnew কমান্ড দিয়ে নতুন অস্থায়ী ইমেইল তৈরি করো।\n"
+        "নতুন মেইল এলে আমি স্বয়ংক্রিয়ভাবে এখানে পাঠিয়ে দেব।\n\n"
+        "🔒 টোকেন নিরাপদ রাখো—কখনো শেয়ার করো না।"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-    except Exception as e:
-        logger.error(f"Error generating new email: {e}")
-        error_message = "দুঃখিত, এই মুহূর্তে নতুন ইমেইল তৈরি করা যাচ্ছে না। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।"
-        if update.callback_query:
-            update.callback_query.answer(error_message, show_alert=True)
-        else:
-            update.message.reply_text(error_message)
+async def getnew(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    app = context.application
+    session: ClientSession = app.bot_data.get("http_session")
+    mail_client = MailTMClient(session)
 
-
-# OTP এবং সার্ভিস নাম খুঁজে বের করার ফাংশন
-def extract_otp_and_service(text_body):
-    """ইমেইলের টেক্সট থেকে OTP এবং সার্ভিস নাম বের করে।"""
-    otp, service = "N/A", "N/A"
-    
-    # সার্ভিস নাম খোঁজার চেষ্টা
-    service_match = re.search(r'(?:The\s)?(Telegram|Google|Facebook|Twitter|Instagram|Amazon|Netflix)\sTeam', text_body, re.IGNORECASE)
-    if not service_match:
-        service_match = re.search(r'verify your (Telegram|Google|Facebook|Twitter|Instagram|Amazon|Netflix) account', text_body, re.IGNORECASE)
-    
-    if service_match:
-        service = service_match.group(1).capitalize()
-
-    # সাধারণ OTP প্যাটার্ন খোঁজা (৪ থেকে ৮ সংখ্যার কোড)
-    otp_match = re.search(r'Your code is:?\s*(\d{4,8})\b|verification code:?\s*(\d{4,8})\b|\b(\d{4,8})\b is your verification code', text_body, re.IGNORECASE)
-    if otp_match:
-        # re.search একাধিক গ্রুপ থেকে ম্যাচ করতে পারে, তাই প্রথম যেটি পাওয়া যায় সেটি নেওয়া হচ্ছে
-        otp = next((group for group in otp_match.groups() if group is not None), "N/A")
-
-    return service, otp
-
-
-# ইনবক্স চেক করার ফাংশন (ব্যাকগ্রাউন্ডে চলবে)
-def check_inbox(context: CallbackContext) -> None:
-    """স্বয়ংক্রিয়ভাবে নতুন ইমেইলের জন্য ইনবক্স চেক করে।"""
-    chat_id = context.job.context
-    user_data = context.dispatcher.user_data.get(chat_id, {})
-    
-    email = user_data.get('email')
-    tm = user_data.get('tempmail_instance')
-    
-    if not email or not tm:
-        return
-
-    try:
-        inbox = tm.get_inbox()
-
-        if not isinstance(inbox, list):
+    # simple cooldown to prevent abuse (1 minute)
+    last = user_data.get(chat_id, {}).get("last_getnew")
+    if last:
+        delta = (datetime.utcnow() - last).total_seconds()
+        if delta < 30:
+            await update.message.reply_text("অনুগ্রহ করে একটু অপেক্ষা করুন এবং আবার চেষ্টা করুন (cooldown).")
             return
 
-        last_checked_ids = user_data.get('last_checked_ids', set())
-        
-        for mail in inbox:
-            # লাইব্রেরি থেকে mail_id বা ইউনিক কিছু পাওয়া গেলে সেটা ব্যবহার করা ভালো
-            # এখানে আমরা subject এবং from দিয়ে একটি ইউনিক আইডি তৈরি করছি
-            mail_unique_id = f"{mail['from']}_{mail['subject']}"
-            
-            if mail_unique_id not in last_checked_ids:
-                # মেসেজ ফরম্যাট করা
-                full_message_body = mail.get('body_text', 'No content')
-                service, otp = extract_otp_and_service(full_message_body)
-                
-                # আপনার দেওয়া ফরম্যাট অনুযায়ী মেসেজ তৈরি
-                formatted_message = f"""
-*New Email Received* 📬
-
-🕰 *Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-✉️ *Email:* {email}
-📱 *Service:* {service}
-🔑 *OTP:* `{otp}` 👈 (Tap to copy)
-
----
-✉️ *Full Message:*
-{full_message_body}
-                """
-                context.bot.send_message(chat_id=chat_id, text=formatted_message, parse_mode='Markdown')
-                last_checked_ids.add(mail_unique_id)
-        
-        user_data['last_checked_ids'] = last_checked_ids
-
+    try:
+        acc = await mail_client.create_account()
+        token = await mail_client.create_token(acc["address"], acc["password"])
     except Exception as e:
-        logger.error(f"Could not check inbox for {email}: {e}")
+        await update.message.reply_text(f"অ্যাকাউন্ট তৈরি ব্যর্থ: {e}")
+        return
 
-def main() -> None:
-    """বটটি চালু করে।"""
-    # আপনার বটের টোকেন এখানে দিন
-    updater = Updater("8064236020:AAGS_PO-PcQAu8dCcoJMTRjQzBMtJ8TlR4g")
+    user_data[chat_id] = {
+        "address": acc["address"],
+        "password": acc["password"],
+        "token": token,
+        "seen": set(),
+        "last_getnew": datetime.utcnow(),
+    }
 
-    dispatcher = updater.dispatcher
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔄 Change Email", callback_data="change_email")]]
+    )
+    await update.message.reply_text(
+        f"✅ নতুন ইমেইল তৈরি হলো:\n`{acc['address']}`\n\nChange করলে নতুন ইমেইল পাবে।",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
 
-    # কমান্ড হ্যান্ডলার যোগ করা
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("getnew", generate_new_email))
-    
-    # বাটন ক্লিকের জন্য কলব্যাক হ্যান্ডলার
-    dispatcher.add_handler(CallbackQueryHandler(generate_new_email, pattern='^change_email$'))
+async def change_email_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    app = context.application
+    session: ClientSession = app.bot_data.get("http_session")
+    mail_client = MailTMClient(session)
+    try:
+        acc = await mail_client.create_account()
+        token = await mail_client.create_token(acc["address"], acc["password"])
+    except Exception as e:
+        await query.message.reply_text(f"Email পরিবর্তন ব্যর্থ: {e}")
+        return
 
-    # বট চালু করা
-    updater.start_polling()
-    logger.info("Bot has started.")
+    user_data[chat_id] = {
+        "address": acc["address"],
+        "password": acc["password"],
+        "token": token,
+        "seen": set(),
+        "last_getnew": datetime.utcnow(),
+    }
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔄 Change Email", callback_data="change_email")]]
+    )
+    await query.message.reply_text(
+        f"🔁 Email পরিবর্তিত হলো: `{acc['address']}`",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
 
-    updater.idle()
+# --- Polling task ---
+async def poll_inboxes(app):
+    session: ClientSession = app.bot_data.get("http_session")
+    mail_client = MailTMClient(session)
+    while True:
+        try:
+            # iterate over copy of items to avoid mutation issues
+            for chat_id, data in list(user_data.items()):
+                token = data.get("token")
+                address = data.get("address")
+                if not token or not address:
+                    continue
+                try:
+                    msgs_json = await mail_client.get_messages(token)
+                except Exception as e:
+                    # token may expire or fail; skip for now
+                    # optionally, you could try to re-create token using saved pwd
+                    # print(f"get_messages error for {address}: {e}")
+                    continue
 
-if __name__ == '__main__':
+                members = msgs_json.get("hydra:member", [])
+                for msg in members:
+                    msg_id = msg.get("id")
+                    if not msg_id:
+                        continue
+                    if msg_id in data.get("seen", set()):
+                        continue
+                    # fetch full message
+                    try:
+                        full = await mail_client.get_message(token, msg_id)
+                    except Exception:
+                        continue
+                    formatted, otp = format_email_message(full, address)
+                    keyboard = InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("🔄 Change Email", callback_data="change_email")]]
+                    )
+                    # send message (use Markdown and code blocks)
+                    try:
+                        await app.bot.send_message(
+                            chat_id=chat_id,
+                            text=formatted,
+                            parse_mode="Markdown",
+                            reply_markup=keyboard,
+                        )
+                    except Exception:
+                        # failed to send (user blocked bot or other); skip
+                        pass
+                    # mark seen
+                    data.setdefault("seen", set()).add(msg_id)
+        except Exception as e:
+            # top-level poll exception - keep running
+            print("Poll loop error:", e)
+        await asyncio.sleep(POLL_INTERVAL)
+
+# --- startup/shutdown lifecycle ---
+async def on_startup(app):
+    # create shared aiohttp session and start poller
+    app.bot_data["http_session"] = aiohttp.ClientSession()
+    # schedule poll task
+    app.create_task(poll_inboxes(app))
+
+async def on_shutdown(app):
+    sess: ClientSession = app.bot_data.get("http_session")
+    if sess:
+        await sess.close()
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("getnew", getnew))
+    app.add_handler(CallbackQueryHandler(change_email_callback, pattern="^change_email$"))
+
+    app.post_init(on_startup)
+    app.post_shutdown(on_shutdown)
+
+    # start long-running polling (will block)
+    app.run_polling()
+
+if __name__ == "__main__":
     main()
