@@ -1,231 +1,177 @@
-import asyncio
-import requests
-import os
+pip install python-telegram-bot==13.7 temp-mail```
+
+### ধাপ ২: সম্পূর্ণ পাইথন কোড
+
+নিচের সম্পূর্ণ কোডটি `temp_mail_bot.py` ফাইলে কপি করে পেস্ট করুন। `YOUR_TELEGRAM_BOT_TOKEN`-এর জায়গায় আপনার নিজের বটের টোকেনটি বসাতে ভুলবেন না।
+
+```python
+import logging
 import re
-import html
-import sqlite3
-import time
-import sys
 from datetime import datetime
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from tempmail import TempMail
 
-# === CONFIGURATION ===
-# আপনার ব্যক্তিগত তথ্যগুলো এখন Environment Variable থেকে লোড করা হচ্ছে
-# এতে আপনার তথ্য সোর্স কোডে উন্মুক্ত থাকবে না এবং সুরক্ষিত থাকবে
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
-USERNAME = os.getenv('USERNAME')
-PASSWORD = os.getenv('PASSWORD')
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler
 
-# Check if all required environment variables are set
-if not all([BOT_TOKEN, CHAT_ID, USERNAME, PASSWORD]):
-    print("ত্রুটি: প্রয়োজনীয় Environment Variables (BOT_TOKEN, CHAT_ID, USERNAME, PASSWORD) সেট করা নেই।")
-    print("দয়া করে .env ফাইল তৈরি করুন অথবা সিস্টেম Environment Variable সেট করে আবার চেষ্টা করুন।")
-    sys.exit(1) # Exit the script with an error code
+# লগিং চালু করা হচ্ছে
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-BASE_URL = "http://193.70.33.154"
-LOGIN_PAGE_URL = BASE_URL + "/ints/login"
-LOGIN_POST_URL = BASE_URL + "/ints/signin"
-DATA_URL = BASE_URL + "/ints/agent/res/data_smscdr.php"
+# স্টার্ট কমান্ড হ্যান্ডলার
+def start(update: Update, context: CallbackContext) -> None:
+    """/start কমান্ড দিলে এই ফাংশনটি কাজ করবে।"""
+    welcome_message = """
+👋 *স্বাগতম!*
 
-# Retry Configuration
-INITIAL_RETRY_DELAY = 10
-MAX_RETRY_DELAY = 300
+আমি একটি স্বয়ংক্রিয় টেম্পোরারি ইমেইল বট।
 
-# === COUNTRY CODE MAP ===
-COUNTRY_MAP = {
-    '1': '🇺🇸 USA / Canada', '7': '🇷🇺 Russia / Kazakhstan', '20': '🇪🇬 Egypt', '27': '🇿🇦 South Africa',
-    '30': '🇬🇷 Greece', '31': '🇳🇱 Netherlands', '32': '🇧🇪 Belgium', '33': '🇫🇷 France', '34': '🇪🇸 Spain',
-    '36': '🇭🇺 Hungary', '39': '🇮🇹 Italy', '40': '🇷🇴 Romania', '41': '🇨🇭 Switzerland', '43': '🇦🇹 Austria',
-    '44': '🇬🇧 United Kingdom', '45': '🇩🇰 Denmark', '46': '🇸🇪 Sweden', '47': '🇳🇴 Norway', '48': '🇵🇱 Poland',
-    '49': '🇩🇪 Germany', '51': '🇵🇪 Peru', '52': '🇲🇽 Mexico', '53': '🇨🇺 Cuba', '54': '🇦🇷 Argentina',
-    '55': '🇧🇷 Brazil', '56': '🇨🇱 Chile', '57': '🇨🇴 Colombia', '58': '🇻🇪 Venezuela', '60': '🇲🇾 Malaysia',
-    '61': '🇦🇺 Australia', '62': '🇮🇩 Indonesia', '63': '🇵🇭 Philippines', '64': '🇳🇿 New Zealand',
-    '65': '🇸🇬 Singapore', '66': '🇹🇭 Thailand', '81': '🇯🇵 Japan', '82': '🇰🇷 South Korea', '84': '🇻🇳 Vietnam',
-    '86': '🇨🇳 China', '90': '🇹🇷 Turkey', '91': '🇮🇳 India', '92': '🇵🇰 Pakistan', '93': '🇦🇫 Afghanistan',
-    '94': '🇱🇰 Sri Lanka', '95': '🇲🇲 Myanmar', '98': '🇮🇷 Iran', '211': '🇸🇸 South Sudan', '212': '🇲🇦 Morocco',
-    '213': '🇩🇿 Algeria', '216': '🇹🇳 Tunisia', '218': '🇱🇾 Libya', '220': '🇬🇲 Gambia', '221': '🇸🇳 Senegal',
-    '222': '🇲🇷 Mauritania', '223': '🇲🇱 Mali', '224': '🇬🇳 Guinea', '225': '🇨🇮 Côte d\'Ivoire', '226': '🇧🇫 Burkina Faso',
-    '227': '🇳🇪 Niger', '228': '🇹🇬 Togo', '229': '🇧🇯 Benin', '230': '🇲🇺 Mauritius', '231': '🇱🇷 Liberia',
-    '232': '🇸🇱 Sierra Leone', '233': '🇬🇭 Ghana', '234': '🇳🇬 Nigeria', '235': '🇹🇩 Chad', '236': '🇨🇫 Central African Republic',
-    '237': '🇨🇲 Cameroon', '238': '🇨🇻 Cape Verde', '239': '🇸🇹 Sao Tome & Principe', '240': '🇬🇶 Equatorial Guinea',
-    '241': '🇬🇦 Gabon', '242': '🇨🇬 Congo', '243': '🇨🇩 DR Congo', '244': '🇦🇴 Angola', '249': '🇸🇩 Sudan',
-    '250': '🇷🇼 Rwanda', '251': '🇪🇹 Ethiopia', '252': '🇸🇴 Somalia', '253': '🇩🇯 Djibouti', '254': '🇰🇪 Kenya',
-    '255': '🇹🇿 Tanzania', '256': '🇺🇬 Uganda', '257': '🇧🇮 Burundi', '258': '🇲🇿 Mozambique', '260': '🇿🇲 Zambia',
-    '261': '🇲🇬 Madagascar', '263': '🇿🇼 Zimbabwe', '264': '🇳🇦 Namibia', '265': '🇲🇼 Malawi', '266': '🇱🇸 Lesotho',
-    '267': '🇧🇼 Botswana', '268': '🇸🇿 Eswatini', '269': '🇰🇲 Comoros', '290': '🇸🇭 Saint Helena', '291': '🇪🇷 Eritrea',
-    '297': '🇦🇼 Aruba', '298': '🇫🇴 Faroe Islands', '299': '🇬🇱 Greenland', '350': '🇬🇮 Gibraltar', '351': '🇵🇹 Portugal',
-    '352': '🇱🇺 Luxembourg', '353': '🇮🇪 Ireland', '354': '🇮🇸 Iceland', '355': '🇦🇱 Albania', '356': '🇲🇹 Malta',
-    '357': '🇨🇾 Cyprus', '358': '🇫🇮 Finland', '359': '🇧🇬 Bulgaria', '370': '🇱🇹 Lithuania', '371': '🇱🇻 Latvia',
-    '372': '🇪🇪 Estonia', '373': '🇲🇩 Moldova', '374': '🇦🇲 Armenia', '375': '🇧🇾 Belarus', '376': '🇦🇩 Andorra',
-    '377': '🇲🇨 Monaco', '378': '🇸🇲 San Marino', '380': '🇺🇦 Ukraine', '381': '🇷🇸 Serbia', '382': '🇲🇪 Montenegro',
-    '383': '🇽🇰 Kosovo', '385': '🇭🇷 Croatia', '386': '🇸🇮 Slovenia', '387': '🇧🇦 Bosnia & Herzegovina',
-    '389': '🇲🇰 North Macedonia', '420': '🇨🇿 Czech Republic', '421': '🇸🇰 Slovakia', '423': '🇱🇮 Liechtenstein',
-    '852': '🇭🇰 Hong Kong', '853': '🇲🇴 Macau', '855': '🇰🇭 Cambodia', '856': '🇱🇦 Laos', '880': '🇧🇩 Bangladesh',
-    '886': '🇹🇼 Taiwan', '960': '🇲🇻 Maldives', '961': '🇱🇧 Lebanon', '962': '🇯🇴 Jordan', '963': '🇸🇾 Syria',
-    '964': '🇮🇶 Iraq', '965': '🇰🇼 Kuwait', '966': '🇸🇦 Saudi Arabia', '967': '🇾🇪 Yemen', '968': '🇴🇲 Oman',
-    '970': '🇵🇸 Palestine', '971': '🇦🇪 UAE', '972': '🇮🇱 Israel', '973': '🇧🇭 Bahrain', '974': '🇶🇦 Qatar',
-    '975': '🇧🇹 Bhutan', '976': '🇲🇳 Mongolia', '977': '🇳🇵 Nepal', '992': '🇹🇯 Tajikistan', '993': '🇹🇲 Turkmenistan',
-    '994': '🇦🇿 Azerbaijan', '995': '🇬🇪 Georgia', '996': '🇰🇬 Kyrgyzstan', '998': '🇺🇿 Uzbekistan'
-}
+আমার মাধ্যমে আপনি অস্থায়ী ইমেইল ঠিকানা তৈরি করতে এবং ইমেইল গ্রহণ করতে পারবেন।
 
-# Telegram bot and HTTP session
-bot = Bot(token=BOT_TOKEN)
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0"})
+/getnew কমান্ড ব্যবহার করে একটি নতুন ইমেইল ঠিকানা তৈরি করুন।
+    """
+    update.message.reply_text(welcome_message, parse_mode='Markdown')
 
-# === DATABASE FUNCTIONS ===
-DB_NAME = "otp_history.db"
-def setup_database():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('CREATE TABLE IF NOT EXISTS sent_otps (otp_key TEXT PRIMARY KEY, sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    conn.commit()
-    conn.close()
-
-def is_otp_already_sent(otp_key):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM sent_otps WHERE otp_key = ?", (otp_key,))
-    exists = cursor.fetchone()
-    conn.close()
-    return exists is not None
-
-def add_otp_to_db(otp_key):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO sent_otps (otp_key) VALUES (?)", (otp_key,))
-    conn.commit()
-    conn.close()
-
-# === HELPER FUNCTIONS ===
-def get_country_from_number(number: str) -> str:
-    for code in sorted(COUNTRY_MAP.keys(), key=len, reverse=True):
-        if number.startswith(code):
-            return COUNTRY_MAP[code]
-    return '🌍 Unknown Country'
-
-def mask_number(number_str: str) -> str:
-    if len(number_str) > 9:
-        return f"{number_str[:5]}****{number_str[-4:]}"
-    return number_str
-
-# === CORE NETWORK FUNCTIONS ===
-def login():
-    delay = INITIAL_RETRY_DELAY
-    while True:
-        try:
-            resp = session.get(LOGIN_PAGE_URL, timeout=15)
-            resp.raise_for_status()
-            match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-            captcha_answer = int(match.group(1)) + int(match.group(2)) if match else 0
-            payload = {"username": USERNAME, "password": PASSWORD, "capt": captcha_answer}
-            headers = {"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN_PAGE_URL}
-            resp = session.post(LOGIN_POST_URL, data=payload, headers=headers, timeout=15)
-            resp.raise_for_status()
-            if "dashboard" in resp.text.lower() or "logout" in resp.text.lower():
-                print("Login successful")
-                return True
-            else:
-                print("Login failed! Check credentials.")
-                return False
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            print(f"Connection error during login. Retrying in {delay}s...")
-            time.sleep(delay)
-            delay = min(delay * 2, MAX_RETRY_DELAY)
-
-def build_api_url():
-    today = datetime.now().strftime("%Y-%m-%d")
-    return (
-        f"{DATA_URL}?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&frange=&fclient=&fnum=&fcli=&fgdate=&fgmonth=&fgrange=&fgclient=&fgnumber=&fgcli=&fg=0&sEcho=1&iColumns=9&sColumns=%2C%2C%2C%2C%2C%2C%2C%2C&iDisplayStart=0&iDisplayLength=25&mDataProp_0=0&sSearch_0=&bRegex_0=false&bSearchable_0=true&bSortable_0=true&mDataProp_1=1&sSearch_1=&bRegex_1=false&bSearchable_1=true&bSortable_1=true&mDataProp_2=2&sSearch_2=&bRegex_2=false&bSearchable_2=true&bSortable_2=true&mDataProp_3=3&sSearch_3=&bRegex_3=false&bSearchable_3=true&bSortable_3=true&mDataProp_4=4&sSearch_4=&bRegex_4=false&bSearchable_4=true&bSortable_4=true&mDataProp_5=5&sSearch_5=&bRegex_5=false&bSearchable_5=true&bSortable_5=true&mDataProp_6=6&sSearch_6=&bRegex_6=false&bSearchable_6=true&bSortable_6=true&mDataProp_7=7&sSearch_7=&bRegex_7=false&bSearchable_7=true&bSortable_7=true&mDataProp_8=8&sSearch_8=&bRegex_8=false&bSearchable_8=true&bSortable_8=false&sSearch=&bRegex=false&iSortCol_0=0&sSortDir_0=desc&iSortingCols=1"
-    )
-
-def fetch_data():
-    url = build_api_url()
-    headers = {"X-Requested-With": "XMLHttpRequest"}
-    delay = INITIAL_RETRY_DELAY
-    while True:
-        try:
-            resp = session.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code in [403, 401] or "login" in resp.text.lower():
-                print("Session expired, re-logging...")
-                if login():
-                    delay = INITIAL_RETRY_DELAY
-                    continue
-                else:
-                    return None
-            else:
-                resp.raise_for_status()
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            print(f"Data fetch error. Retrying in {delay}s...")
-            time.sleep(delay)
-            delay = min(delay * 2, MAX_RETRY_DELAY)
-
-# === TELEGRAM SENDER ===
-async def send_to_telegram(date, number, service, otp, message):
-    country_info = get_country_from_number(number)
-    country_parts = country_info.split(' ', 1)
-    country_emoji = country_parts[0]
-    country_name = country_parts[1].split(' / ')[0]
-    masked_number = mask_number(number)
-    
-    safe_service = html.escape(service)
-    safe_otp = html.escape(otp)
-    safe_message = html.escape(message)
-
-    title = f"🔔 {country_emoji} <b>{country_name}</b> {safe_service} OТP Received..."
-
-    body_lines = [
-        f"<blockquote>🕰 Time: {date}</blockquote>",
-        f"<blockquote>🌍 Country: {country_info}</blockquote>",
-        f"<blockquote>📱 Service: {safe_service}</blockquote>",
-        f"<blockquote>📞 Number: {masked_number}</blockquote>",
-        f"<blockquote>🔑 OTP: {safe_otp}</blockquote>",
-        f"<blockquote>✉️ Full Message:</blockquote>",
-        f"<blockquote># {safe_message}</blockquote>"
-    ]
-    
-    body = "\n".join(body_lines)
-    full_message = f"{title}\n\n{body}"
-
+# নতুন ইমেইল তৈরি করার ফাংশন
+def generate_new_email(update: Update, context: CallbackContext) -> None:
+    """একটি নতুন অস্থায়ী ইমেইল ঠিকানা তৈরি করে।"""
     try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=full_message,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-        print("Message Sent")
+        # temp-mail লাইব্রেরি ব্যবহার করে ইমেইল তৈরি
+        tm = TempMail()
+        email = tm.get_email()
+
+        if not email or "@" not in email:
+            raise ValueError("API থেকে সঠিক ইমেইল পাওয়া যায়নি।")
+
+        # ব্যবহারকারীর জন্য ইমেইল ঠিকানা ও অন্যান্য ডেটা সংরক্ষণ করা
+        context.user_data['email'] = email
+        context.user_data['last_checked_ids'] = set()
+        context.user_data['tempmail_instance'] = tm
+
+        keyboard = [[InlineKeyboardButton("🔄 Change Email", callback_data='change_email')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        message = f"✅ আপনার নতুন অস্থায়ী ইমেইল ঠিকানা:\n\n`{email}`\n\nএই ঠিকানায় কোনো ইমেইল এলে আমি আপনাকে জানিয়ে দেব।"
+        
+        # যদি কোনো ব্যবহারকারী বাটন থেকে কল করে, তাহলে মেসেজ এডিট হবে
+        if update.callback_query:
+            update.callback_query.edit_message_text(text=message, reply_markup=reply_markup, parse_mode='Markdown')
+        else: # যদি কমান্ড থেকে কল হয়
+            update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+
+        # ব্যাকগ্রাউন্ডে ইনবক্স চেক করার জব সেট করা
+        job_name = str(update.effective_chat.id)
+        # পুরনো জব থাকলে রিমুভ করা
+        current_jobs = context.job_queue.get_jobs_by_name(job_name)
+        if current_jobs:
+            for job in current_jobs:
+                job.schedule_removal()
+        
+        context.job_queue.run_repeating(check_inbox, interval=15, first=0, context=update.effective_chat.id, name=job_name)
+
     except Exception as e:
-        print(f"Telegram send error: {e}")
+        logger.error(f"Error generating new email: {e}")
+        error_message = "দুঃখিত, এই মুহূর্তে নতুন ইমেইল তৈরি করা যাচ্ছে না। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।"
+        if update.callback_query:
+            update.callback_query.answer(error_message, show_alert=True)
+        else:
+            update.message.reply_text(error_message)
 
-# === MAIN LOOP ===
-async def main_loop():
-    setup_database()
-    if not login():
-        return
+
+# OTP এবং সার্ভিস নাম খুঁজে বের করার ফাংশন
+def extract_otp_and_service(text_body):
+    """ইমেইলের টেক্সট থেকে OTP এবং সার্ভিস নাম বের করে।"""
+    otp, service = "N/A", "N/A"
     
-    while True:
-        data = fetch_data()
-        if data and 'aaData' in data:
-            for row in data['aaData']:
-                if len(row) < 6: continue
-                date, number, service, message = row[0], row[2], row[3], html.unescape(row[5] or "")
-                match = re.search(r"\b\d{3}-\d{3}\b|\b\d{4,6}\b", message)
-                otp = match.group() if match else None
-                if otp:
-                    key = f"{number}|{otp}"
-                    if not is_otp_already_sent(key):
-                        add_otp_to_db(key)
-                        await send_to_telegram(date, number, service, otp, message)
-        await asyncio.sleep(5)
+    # সার্ভিস নাম খোঁজার চেষ্টা
+    service_match = re.search(r'(?:The\s)?(Telegram|Google|Facebook|Twitter|Instagram|Amazon|Netflix)\sTeam', text_body, re.IGNORECASE)
+    if not service_match:
+        service_match = re.search(r'verify your (Telegram|Google|Facebook|Twitter|Instagram|Amazon|Netflix) account', text_body, re.IGNORECASE)
+    
+    if service_match:
+        service = service_match.group(1).capitalize()
 
-# === START BOT ===
-if __name__ == "__main__":
-    print("Bot started")
+    # সাধারণ OTP প্যাটার্ন খোঁজা (৪ থেকে ৮ সংখ্যার কোড)
+    otp_match = re.search(r'Your code is:?\s*(\d{4,8})\b|verification code:?\s*(\d{4,8})\b|\b(\d{4,8})\b is your verification code', text_body, re.IGNORECASE)
+    if otp_match:
+        # re.search একাধিক গ্রুপ থেকে ম্যাচ করতে পারে, তাই প্রথম যেটি পাওয়া যায় সেটি নেওয়া হচ্ছে
+        otp = next((group for group in otp_match.groups() if group is not None), "N/A")
+
+    return service, otp
+
+
+# ইনবক্স চেক করার ফাংশন (ব্যাকগ্রাউন্ডে চলবে)
+def check_inbox(context: CallbackContext) -> None:
+    """স্বয়ংক্রিয়ভাবে নতুন ইমেইলের জন্য ইনবক্স চেক করে।"""
+    chat_id = context.job.context
+    user_data = context.dispatcher.user_data.get(chat_id, {})
+    
+    email = user_data.get('email')
+    tm = user_data.get('tempmail_instance')
+    
+    if not email or not tm:
+        return
+
     try:
-        asyncio.run(main_loop())
-    except KeyboardInterrupt:
-        print("\nBot stopped.")
+        inbox = tm.get_inbox()
+
+        if not isinstance(inbox, list):
+            return
+
+        last_checked_ids = user_data.get('last_checked_ids', set())
+        
+        for mail in inbox:
+            # লাইব্রেরি থেকে mail_id বা ইউনিক কিছু পাওয়া গেলে সেটা ব্যবহার করা ভালো
+            # এখানে আমরা subject এবং from দিয়ে একটি ইউনিক আইডি তৈরি করছি
+            mail_unique_id = f"{mail['from']}_{mail['subject']}"
+            
+            if mail_unique_id not in last_checked_ids:
+                # মেসেজ ফরম্যাট করা
+                full_message_body = mail.get('body_text', 'No content')
+                service, otp = extract_otp_and_service(full_message_body)
+                
+                # আপনার দেওয়া ফরম্যাট অনুযায়ী মেসেজ তৈরি
+                formatted_message = f"""
+*New Email Received* 📬
+
+🕰 *Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+✉️ *Email:* {email}
+📱 *Service:* {service}
+🔑 *OTP:* `{otp}` 👈 (Tap to copy)
+
+---
+✉️ *Full Message:*
+{full_message_body}
+                """
+                context.bot.send_message(chat_id=chat_id, text=formatted_message, parse_mode='Markdown')
+                last_checked_ids.add(mail_unique_id)
+        
+        user_data['last_checked_ids'] = last_checked_ids
+
+    except Exception as e:
+        logger.error(f"Could not check inbox for {email}: {e}")
+
+def main() -> None:
+    """বটটি চালু করে।"""
+    # আপনার বটের টোকেন এখানে দিন
+    updater = Updater("8064236020:AAGS_PO-PcQAu8dCcoJMTRjQzBMtJ8TlR4g")
+
+    dispatcher = updater.dispatcher
+
+    # কমান্ড হ্যান্ডলার যোগ করা
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("getnew", generate_new_email))
+    
+    # বাটন ক্লিকের জন্য কলব্যাক হ্যান্ডলার
+    dispatcher.add_handler(CallbackQueryHandler(generate_new_email, pattern='^change_email$'))
+
+    # বট চালু করা
+    updater.start_polling()
+    logger.info("Bot has started.")
+
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
