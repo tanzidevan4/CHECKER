@@ -1,10 +1,3 @@
-pip install python-telegram-bot==13.7 temp-mail```
-
-### ধাপ ২: সম্পূর্ণ পাইথন কোড
-
-নিচের সম্পূর্ণ কোডটি `temp_mail_bot.py` ফাইলে কপি করে পেস্ট করুন। `YOUR_TELEGRAM_BOT_TOKEN`-এর জায়গায় আপনার নিজের বটের টোকেনটি বসাতে ভুলবেন না।
-
-```python
 import logging
 import re
 from datetime import datetime
