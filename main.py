@@ -7,7 +7,7 @@ import sqlite3
 import time
 import sys
 from datetime import datetime
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot
 
 # === CONFIGURATION ===
 # আপনার ব্যক্তিগত তথ্যগুলো এখন Environment Variable থেকে লোড করা হচ্ছে
@@ -72,7 +72,7 @@ COUNTRY_MAP = {
 # Telegram bot and HTTP session
 bot = Bot(token=BOT_TOKEN)
 session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0"})
+session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
 
 # === DATABASE FUNCTIONS ===
 DB_NAME = "otp_history.db"
@@ -115,10 +115,16 @@ def login():
     delay = INITIAL_RETRY_DELAY
     while True:
         try:
+            print("Attempting to login...")
             resp = session.get(LOGIN_PAGE_URL, timeout=15)
             resp.raise_for_status()
             match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-            captcha_answer = int(match.group(1)) + int(match.group(2)) if match else 0
+            if not match:
+                print("Could not find captcha on login page.")
+                time.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY)
+                continue
+            captcha_answer = int(match.group(1)) + int(match.group(2))
             payload = {"username": USERNAME, "password": PASSWORD, "capt": captcha_answer}
             headers = {"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN_PAGE_URL}
             resp = session.post(LOGIN_POST_URL, data=payload, headers=headers, timeout=15)
@@ -127,48 +133,74 @@ def login():
                 print("Login successful")
                 return True
             else:
-                print("Login failed! Check credentials.")
+                print("Login failed! Check credentials or page content.")
                 return False
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            print(f"Connection error during login. Retrying in {delay}s...")
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            print(f"Connection error during login ({type(e).__name__}). Retrying in {delay}s...")
+            time.sleep(delay)
+            delay = min(delay * 2, MAX_RETRY_DELAY)
+        except Exception as e:
+            print(f"An unexpected error occurred during login: {e}. Retrying in {delay}s...")
             time.sleep(delay)
             delay = min(delay * 2, MAX_RETRY_DELAY)
 
+# MODIFIED: This function now adds the required timestamp parameter to avoid caching issues.
 def build_api_url():
     today = datetime.now().strftime("%Y-%m-%d")
+    timestamp = int(time.time() * 1000) # ADDED: Cache-busting parameter
     return (
-        f"{DATA_URL}?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&frange=&fclient=&fnum=&fcli=&fgdate=&fgmonth=&fgrange=&fgclient=&fgnumber=&fgcli=&fg=0&sEcho=1&iColumns=9&sColumns=%2C%2C%2C%2C%2C%2C%2C%2C&iDisplayStart=0&iDisplayLength=25&mDataProp_0=0&sSearch_0=&bRegex_0=false&bSearchable_0=true&bSortable_0=true&mDataProp_1=1&sSearch_1=&bRegex_1=false&bSearchable_1=true&bSortable_1=true&mDataProp_2=2&sSearch_2=&bRegex_2=false&bSearchable_2=true&bSortable_2=true&mDataProp_3=3&sSearch_3=&bRegex_3=false&bSearchable_3=true&bSortable_3=true&mDataProp_4=4&sSearch_4=&bRegex_4=false&bSearchable_4=true&bSortable_4=true&mDataProp_5=5&sSearch_5=&bRegex_5=false&bSearchable_5=true&bSortable_5=true&mDataProp_6=6&sSearch_6=&bRegex_6=false&bSearchable_6=true&bSortable_6=true&mDataProp_7=7&sSearch_7=&bRegex_7=false&bSearchable_7=true&bSortable_7=true&mDataProp_8=8&sSearch_8=&bRegex_8=false&bSearchable_8=true&bSortable_8=false&sSearch=&bRegex=false&iSortCol_0=0&sSortDir_0=desc&iSortingCols=1"
+        f"{DATA_URL}?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&frange=&fclient=&fnum=&fcli=&fgdate=&fgmonth=&fgrange=&fgclient=&fgnumber=&fgcli=&fg=0&sEcho=1&iColumns=9&sColumns=%2C%2C%2C%2C%2C%2C%2C%2C&iDisplayStart=0&iDisplayLength=25&mDataProp_0=0&sSearch_0=&bRegex_0=false&bSearchable_0=true&bSortable_0=true&mDataProp_1=1&sSearch_1=&bRegex_1=false&bSearchable_1=true&bSortable_1=true&mDataProp_2=2&sSearch_2=&bRegex_2=false&bSearchable_2=true&bSortable_2=true&mDataProp_3=3&sSearch_3=&bRegex_3=false&bSearchable_3=true&bSortable_3=true&mDataProp_4=4&sSearch_4=&bRegex_4=false&bSearchable_4=true&bSortable_4=true&mDataProp_5=5&sSearch_5=&bRegex_5=false&bSearchable_5=true&bSortable_5=true&mDataProp_6=6&sSearch_6=&bRegex_6=false&bSearchable_6=true&bSortable_6=true&mDataProp_7=7&sSearch_7=&bRegex_7=false&bSearchable_7=true&bSortable_7=true&mDataProp_8=8&sSearch_8=&bRegex_8=false&bSearchable_8=true&bSortable_8=false&sSearch=&bRegex=false&iSortCol_0=0&sSortDir_0=desc&iSortingCols=1&_={timestamp}"
     )
 
+# MODIFIED: This function now includes the 'Referer' header and has a longer timeout.
 def fetch_data():
     url = build_api_url()
-    headers = {"X-Requested-With": "XMLHttpRequest"}
+    headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": BASE_URL + "/ints/agent/SMSCDRReports" # ADDED: Referer header
+    }
     delay = INITIAL_RETRY_DELAY
     while True:
         try:
-            resp = session.get(url, headers=headers, timeout=10)
+            resp = session.get(url, headers=headers, timeout=20) # MODIFIED: Increased timeout
             if resp.status_code == 200:
-                return resp.json()
+                try:
+                    return resp.json()
+                except requests.exceptions.JSONDecodeError:
+                    print("Failed to decode JSON from response. Re-logging as session might be invalid...")
+                    if login():
+                        delay = INITIAL_RETRY_DELAY
+                        continue
+                    else:
+                        return None # Stop if re-login fails
             elif resp.status_code in [403, 401] or "login" in resp.text.lower():
-                print("Session expired, re-logging...")
+                print("Session expired or invalid, re-logging...")
                 if login():
                     delay = INITIAL_RETRY_DELAY
                     continue
                 else:
-                    return None
+                    return None # Stop if re-login fails
             else:
-                resp.raise_for_status()
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            print(f"Data fetch error. Retrying in {delay}s...")
+                print(f"Received unexpected status code {resp.status_code}. Retrying...")
+                time.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY)
+
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            print(f"Data fetch error ({type(e).__name__}). Retrying in {delay}s...")
             time.sleep(delay)
             delay = min(delay * 2, MAX_RETRY_DELAY)
+        except requests.exceptions.RequestException as e:
+            print(f"An unexpected request error occurred: {e}. Retrying in {delay}s...")
+            time.sleep(delay)
+            delay = min(delay * 2, MAX_RETRY_DELAY)
+
 
 # === TELEGRAM SENDER ===
 async def send_to_telegram(date, number, service, otp, message):
     country_info = get_country_from_number(number)
     country_parts = country_info.split(' ', 1)
     country_emoji = country_parts[0]
-    country_name = country_parts[1].split(' / ')[0]
+    country_name = country_parts[1].split(' / ')[0] if len(country_parts) > 1 else country_parts[0]
     masked_number = mask_number(number)
     
     safe_service = html.escape(service)
@@ -182,7 +214,7 @@ async def send_to_telegram(date, number, service, otp, message):
         f"<blockquote>🌍 Country: {country_info}</blockquote>",
         f"<blockquote>📱 Service: {safe_service}</blockquote>",
         f"<blockquote>📞 Number: {masked_number}</blockquote>",
-        f"<blockquote>🔑 OTP: {safe_otp}</blockquote>",
+        f"<blockquote>🔑 OTP: <b>{safe_otp}</b></blockquote>", # MODIFIED: Made OTP bold
         f"<blockquote>✉️ Full Message:</blockquote>",
         f"<blockquote># {safe_message}</blockquote>"
     ]
@@ -197,7 +229,7 @@ async def send_to_telegram(date, number, service, otp, message):
             parse_mode="HTML",
             disable_web_page_preview=True
         )
-        print("Message Sent")
+        print(f"Message sent for number {masked_number} with OTP {safe_otp}")
     except Exception as e:
         print(f"Telegram send error: {e}")
 
@@ -205,22 +237,32 @@ async def send_to_telegram(date, number, service, otp, message):
 async def main_loop():
     setup_database()
     if not login():
+        print("Initial login failed. Exiting.")
         return
     
+    print("Starting to fetch data...")
     while True:
         data = fetch_data()
         if data and 'aaData' in data:
-            for row in data['aaData']:
+            for row in reversed(data['aaData']): # MODIFIED: reversed to process oldest first
                 if len(row) < 6: continue
+                
                 date, number, service, message = row[0], row[2], row[3], html.unescape(row[5] or "")
-                match = re.search(r"\b\d{3}-\d{3}\b|\b\d{4,6}\b", message)
+                
+                # MODIFIED: Improved regex to find more OTP formats
+                match = re.search(r"\b\d{4,8}\b|\b\d{3}[- ]?\d{3}\b", message)
+                
                 otp = match.group() if match else None
                 if otp:
-                    key = f"{number}|{otp}"
+                    # Clean up OTP (remove spaces or hyphens)
+                    otp = re.sub(r'[- ]', '', otp)
+                    key = f"{number}|{otp}|{service}|{date}" # Made key more unique
+                    
                     if not is_otp_already_sent(key):
                         add_otp_to_db(key)
                         await send_to_telegram(date, number, service, otp, message)
-        await asyncio.sleep(5)
+        
+        await asyncio.sleep(5) # Wait 5 seconds before next fetch
 
 # === START BOT ===
 if __name__ == "__main__":
@@ -228,4 +270,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main_loop())
     except KeyboardInterrupt:
-        print("\nBot stopped.")
+        print("\nBot stopped by user.")
