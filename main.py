@@ -1,273 +1,312 @@
 import asyncio
-import requests
+import logging
 import os
+import aiohttp
 import re
-import html
-import sqlite3
-import time
-import sys
-from datetime import datetime
-from telegram import Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes, CallbackQueryHandler,
+    ConversationHandler, MessageHandler, filters
+)
 
-# === CONFIGURATION ===
-# আপনার ব্যক্তিগত তথ্যগুলো এখন Environment Variable থেকে লোড করা হচ্ছে
-# এতে আপনার তথ্য সোর্স কোডে উন্মুক্ত থাকবে না এবং সুরক্ষিত থাকবে
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
-USERNAME = os.getenv('USERNAME')
-PASSWORD = os.getenv('PASSWORD')
+# --- CONFIGURATION ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+SMS_API_URL = "http://174.138.2.82/crapi/had/viewstats"
+SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN")
+POLL_INTERVAL = 8
+RECORDS = 50
+OTP_MESSAGE_DELETE_DELAY = 180
 
-# Check if all required environment variables are set
-if not all([BOT_TOKEN, CHAT_ID, USERNAME, PASSWORD]):
-    print("ত্রুটি: প্রয়োজনীয় Environment Variables (BOT_TOKEN, CHAT_ID, USERNAME, PASSWORD) সেট করা নেই।")
-    print("দয়া করে .env ফাইল তৈরি করুন অথবা সিস্টেম Environment Variable সেট করে আবার চেষ্টা করুন।")
-    sys.exit(1) # Exit the script with an error code
+# --- ADMIN CONFIGURATION ---
+ADMIN_IDS = [int(admin_id) for admin_id in os.environ.get("ADMIN_IDS", "").split(',') if admin_id]
 
-BASE_URL = "http://185.2.83.39"
-LOGIN_PAGE_URL = BASE_URL + "/ints/login"
-LOGIN_POST_URL = BASE_URL + "/ints/signin"
-DATA_URL = BASE_URL + "/ints/agent/res/data_smscdr.php"
+# --- USER VERIFICATION CONFIGURATION ---
+VERIFY_USER = False
+JOIN_LINKS = [
+    {'name': 'ЁЯУв Our Channel', 'url': 'https://t.me/+bey252hj-qU5ZGNl', 'id': '-1002408654815'},
+    {'name': 'ЁЯТм Discussion Group', 'url': 'https://t.me/+1mrti6CrDyQ5MDY1', 'id': '-1002733230903'}
+]
 
-# Retry Configuration
-INITIAL_RETRY_DELAY = 10
-MAX_RETRY_DELAY = 300
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# === COUNTRY CODE MAP ===
-COUNTRY_MAP = {
-    '1': '🇺🇸 USA / Canada', '7': '🇷🇺 Russia / Kazakhstan', '20': '🇪🇬 Egypt', '27': '🇿🇦 South Africa',
-    '30': '🇬🇷 Greece', '31': '🇳🇱 Netherlands', '32': '🇧🇪 Belgium', '33': '🇫🇷 France', '34': '🇪🇸 Spain',
-    '36': '🇭🇺 Hungary', '39': '🇮🇹 Italy', '40': '🇷🇴 Romania', '41': '🇨🇭 Switzerland', '43': '🇦🇹 Austria',
-    '44': '🇬🇧 United Kingdom', '45': '🇩🇰 Denmark', '46': '🇸🇪 Sweden', '47': '🇳🇴 Norway', '48': '🇵🇱 Poland',
-    '49': '🇩🇪 Germany', '51': '🇵🇪 Peru', '52': '🇲🇽 Mexico', '53': '🇨🇺 Cuba', '54': '🇦🇷 Argentina',
-    '55': '🇧🇷 Brazil', '56': '🇨🇱 Chile', '57': '🇨🇴 Colombia', '58': '🇻🇪 Venezuela', '60': '🇲🇾 Malaysia',
-    '61': '🇦🇺 Australia', '62': '🇮🇩 Indonesia', '63': '🇵🇭 Philippines', '64': '🇳🇿 New Zealand',
-    '65': '🇸🇬 Singapore', '66': '🇹🇭 Thailand', '81': '🇯🇵 Japan', '82': '🇰🇷 South Korea', '84': '🇻🇳 Vietnam',
-    '86': '🇨🇳 China', '90': '🇹🇷 Turkey', '91': '🇮🇳 India', '92': '🇵🇰 Pakistan', '93': '🇦🇫 Afghanistan',
-    '94': '🇱🇰 Sri Lanka', '95': '🇲🇲 Myanmar', '98': '🇮🇷 Iran', '211': '🇸🇸 South Sudan', '212': '🇲🇦 Morocco',
-    '213': '🇩🇿 Algeria', '216': '🇹🇳 Tunisia', '218': '🇱🇾 Libya', '220': '🇬🇲 Gambia', '221': '🇸🇳 Senegal',
-    '222': '🇲🇷 Mauritania', '223': '🇲🇱 Mali', '224': '🇬🇳 Guinea', '225': '🇨🇮 Côte d\'Ivoire', '226': '🇧🇫 Burkina Faso',
-    '227': '🇳🇪 Niger', '228': '🇹🇬 Togo', '229': '🇧🇯 Benin', '230': '🇲🇺 Mauritius', '231': '🇱🇷 Liberia',
-    '232': '🇸🇱 Sierra Leone', '233': '🇬🇭 Ghana', '234': '🇳🇬 Nigeria', '235': '🇹🇩 Chad', '236': '🇨🇫 Central African Republic',
-    '237': '🇨🇲 Cameroon', '238': '🇨🇻 Cape Verde', '239': '🇸🇹 Sao Tome & Principe', '240': '🇬🇶 Equatorial Guinea',
-    '241': '🇬🇦 Gabon', '242': '🇨🇬 Congo', '243': '🇨🇩 DR Congo', '244': '🇦🇴 Angola', '249': '🇸🇩 Sudan',
-    '250': '🇷🇼 Rwanda', '251': '🇪🇹 Ethiopia', '252': '🇸🇴 Somalia', '253': '🇩🇯 Djibouti', '254': '🇰🇪 Kenya',
-    '255': '🇹🇿 Tanzania', '256': '🇺🇬 Uganda', '257': '🇧🇮 Burundi', '258': '🇲🇿 Mozambique', '260': '🇿🇲 Zambia',
-    '261': '🇲🇬 Madagascar', '263': '🇿🇼 Zimbabwe', '264': '🇳🇦 Namibia', '265': '🇲🇼 Malawi', '266': '🇱🇸 Lesotho',
-    '267': '🇧🇼 Botswana', '268': '🇸🇿 Eswatini', '269': '🇰🇲 Comoros', '290': '🇸🇭 Saint Helena', '291': '🇪🇷 Eritrea',
-    '297': '🇦🇼 Aruba', '298': '🇫🇴 Faroe Islands', '299': '🇬🇱 Greenland', '350': '🇬🇮 Gibraltar', '351': '🇵🇹 Portugal',
-    '352': '🇱🇺 Luxembourg', '353': '🇮🇪 Ireland', '354': '🇮🇸 Iceland', '355': '🇦🇱 Albania', '356': '🇲🇹 Malta',
-    '357': '🇨🇾 Cyprus', '358': '🇫🇮 Finland', '359': '🇧🇬 Bulgaria', '370': '🇱🇹 Lithuania', '371': '🇱🇻 Latvia',
-    '372': '🇪🇪 Estonia', '373': '🇲🇩 Moldova', '374': '🇦🇲 Armenia', '375': '🇧🇾 Belarus', '376': '🇦🇩 Andorra',
-    '377': '🇲🇨 Monaco', '378': '🇸🇲 San Marino', '380': '🇺🇦 Ukraine', '381': '🇷🇸 Serbia', '382': '🇲🇪 Montenegro',
-    '383': '🇽🇰 Kosovo', '385': '🇭🇷 Croatia', '386': '🇸🇮 Slovenia', '387': '🇧🇦 Bosnia & Herzegovina',
-    '389': '🇲🇰 North Macedonia', '420': '🇨🇿 Czech Republic', '421': '🇸🇰 Slovakia', '423': '🇱🇮 Liechtenstein',
-    '852': '🇭🇰 Hong Kong', '853': '🇲🇴 Macau', '855': '🇰🇭 Cambodia', '856': '🇱🇦 Laos', '880': '🇧🇩 Bangladesh',
-    '886': '🇹🇼 Taiwan', '960': '🇲🇻 Maldives', '961': '🇱🇧 Lebanon', '962': '🇯🇴 Jordan', '963': '🇸🇾 Syria',
-    '964': '🇮🇶 Iraq', '965': '🇰🇼 Kuwait', '966': '🇸🇦 Saudi Arabia', '967': '🇾🇪 Yemen', '968': '🇴🇲 Oman',
-    '970': '🇵🇸 Palestine', '971': '🇦🇪 UAE', '972': '🇮🇱 Israel', '973': '🇧🇭 Bahrain', '974': '🇶🇦 Qatar',
-    '975': '🇧🇹 Bhutan', '976': '🇲🇳 Mongolia', '977': '🇳🇵 Nepal', '992': '🇹🇯 Tajikistan', '993': '🇹🇲 Turkmenistan',
-    '994': '🇦🇿 Azerbaijan', '995': '🇬🇪 Georgia', '996': '🇰🇬 Kyrgyzstan', '998': '🇺🇿 Uzbekistan'
-}
+# --- GLOBAL DATA STORE & STATE ---
+NUMBER_DATA = {}
+seen_sms = set()
+user_chat_ids = set()
+assigned_numbers = {}
+number_to_user_map = {}
+IS_MAINTENANCE_MODE = False
+WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
 
-# Telegram bot and HTTP session
-bot = Bot(token=BOT_TOKEN)
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
+# --- ALL HELPER, UI, AND COMMAND HANDLERS (With fixes) ---
+def extract_otp(message: str) -> str:
+    matches = re.findall(r"\b\d{4,8}\b", message)
+    return matches[0] if matches else "N/A"
 
-# === DATABASE FUNCTIONS ===
-DB_NAME = "otp_history.db"
-def setup_database():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('CREATE TABLE IF NOT EXISTS sent_otps (otp_key TEXT PRIMARY KEY, sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    conn.commit()
-    conn.close()
+async def send_and_schedule_deletion(bot, chat_id, text, delay_seconds):
+    try:
+        message = await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        await asyncio.sleep(delay_seconds)
+        await bot.delete_message(chat_id=chat_id, message_id=message.message_id)
+    except Exception: pass
 
-def is_otp_already_sent(otp_key):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM sent_otps WHERE otp_key = ?", (otp_key,))
-    exists = cursor.fetchone()
-    conn.close()
-    return exists is not None
+def create_country_selection_keyboard() -> InlineKeyboardMarkup:
+    buttons = []
+    if not NUMBER_DATA:
+        buttons.append([InlineKeyboardButton("No numbers available ЁЯШФ", callback_data="no_op")])
+    else:
+        for key, data in NUMBER_DATA.items():
+            buttons.append([InlineKeyboardButton(f"{data['button_text']} (Stock: {data.get('stock', 0)})", callback_data=f"country_{key}")])
+    buttons.append([InlineKeyboardButton("Refresh List ЁЯФД", callback_data="refresh_list")])
+    return InlineKeyboardMarkup(buttons)
 
-def add_otp_to_db(otp_key):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO sent_otps (otp_key) VALUES (?)", (otp_key,))
-    conn.commit()
-    conn.close()
+def create_number_options_keyboard(country_key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Change Number ЁЯФД", callback_data=f"change_num_{country_key}")],
+        [InlineKeyboardButton("Change Country ЁЯМН", callback_data="change_country")]
+    ])
 
-# === HELPER FUNCTIONS ===
-def get_country_from_number(number: str) -> str:
-    for code in sorted(COUNTRY_MAP.keys(), key=len, reverse=True):
-        if number.startswith(code):
-            return COUNTRY_MAP[code]
-    return '🌍 Unknown Country'
-
-def mask_number(number_str: str) -> str:
-    if len(number_str) > 9:
-        return f"{number_str[:5]}****{number_str[-4:]}"
-    return number_str
-
-# === CORE NETWORK FUNCTIONS ===
-def login():
-    delay = INITIAL_RETRY_DELAY
-    while True:
+async def fetch_sms():
+    params = {"token": SMS_API_TOKEN, "records": RECORDS}
+    async with aiohttp.ClientSession() as session:
         try:
-            print("Attempting to login...")
-            resp = session.get(LOGIN_PAGE_URL, timeout=15)
-            resp.raise_for_status()
-            match = re.search(r'What is (\d+) \+ (\d+)', resp.text)
-            if not match:
-                print("Could not find captcha on login page.")
-                time.sleep(delay)
-                delay = min(delay * 2, MAX_RETRY_DELAY)
-                continue
-            captcha_answer = int(match.group(1)) + int(match.group(2))
-            payload = {"username": USERNAME, "password": PASSWORD, "capt": captcha_answer}
-            headers = {"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN_PAGE_URL}
-            resp = session.post(LOGIN_POST_URL, data=payload, headers=headers, timeout=15)
-            resp.raise_for_status()
-            if "dashboard" in resp.text.lower() or "logout" in resp.text.lower():
-                print("Login successful")
-                return True
-            else:
-                print("Login failed! Check credentials or page content.")
-                return False
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            print(f"Connection error during login ({type(e).__name__}). Retrying in {delay}s...")
-            time.sleep(delay)
-            delay = min(delay * 2, MAX_RETRY_DELAY)
+            async with session.get(SMS_API_URL, params=params, timeout=15) as resp:
+                resp.raise_for_status(); data = await resp.json()
+                return data.get("data", []) if data.get("status") == "success" else []
         except Exception as e:
-            print(f"An unexpected error occurred during login: {e}. Retrying in {delay}s...")
-            time.sleep(delay)
-            delay = min(delay * 2, MAX_RETRY_DELAY)
+            logger.error(f"SMS fetch error: {e}"); return []
 
-# MODIFIED: This function now adds the required timestamp parameter to avoid caching issues.
-def build_api_url():
-    today = datetime.now().strftime("%Y-%m-%d")
-    timestamp = int(time.time() * 1000) # ADDED: Cache-busting parameter
-    return (
-        f"{DATA_URL}?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&frange=&fclient=&fnum=&fcli=&fgdate=&fgmonth=&fgrange=&fgclient=&fgnumber=&fgcli=&fg=0&sEcho=1&iColumns=9&sColumns=%2C%2C%2C%2C%2C%2C%2C%2C&iDisplayStart=0&iDisplayLength=25&mDataProp_0=0&sSearch_0=&bRegex_0=false&bSearchable_0=true&bSortable_0=true&mDataProp_1=1&sSearch_1=&bRegex_1=false&bSearchable_1=true&bSortable_1=true&mDataProp_2=2&sSearch_2=&bRegex_2=false&bSearchable_2=true&bSortable_2=true&mDataProp_3=3&sSearch_3=&bRegex_3=false&bSearchable_3=true&bSortable_3=true&mDataProp_4=4&sSearch_4=&bRegex_4=false&bSearchable_4=true&bSortable_4=true&mDataProp_5=5&sSearch_5=&bRegex_5=false&bSearchable_5=true&bSortable_5=true&mDataProp_6=6&sSearch_6=&bRegex_6=false&bSearchable_6=true&bSortable_6=true&mDataProp_7=7&sSearch_7=&bRegex_7=false&bSearchable_7=true&bSortable_7=true&mDataProp_8=8&sSearch_8=&bRegex_8=false&bSearchable_8=true&bSortable_8=false&sSearch=&bRegex=false&iSortCol_0=0&sSortDir_0=desc&iSortingCols=1&_={timestamp}"
-    )
-
-# MODIFIED: This function now includes the 'Referer' header and has a longer timeout.
-def fetch_data():
-    url = build_api_url()
-    headers = {
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": BASE_URL + "/ints/agent/SMSCDRReports" # ADDED: Referer header
-    }
-    delay = INITIAL_RETRY_DELAY
-    while True:
-        try:
-            resp = session.get(url, headers=headers, timeout=20) # MODIFIED: Increased timeout
-            if resp.status_code == 200:
-                try:
-                    return resp.json()
-                except requests.exceptions.JSONDecodeError:
-                    print("Failed to decode JSON from response. Re-logging as session might be invalid...")
-                    if login():
-                        delay = INITIAL_RETRY_DELAY
-                        continue
-                    else:
-                        return None # Stop if re-login fails
-            elif resp.status_code in [403, 401] or "login" in resp.text.lower():
-                print("Session expired or invalid, re-logging...")
-                if login():
-                    delay = INITIAL_RETRY_DELAY
-                    continue
-                else:
-                    return None # Stop if re-login fails
-            else:
-                print(f"Received unexpected status code {resp.status_code}. Retrying...")
-                time.sleep(delay)
-                delay = min(delay * 2, MAX_RETRY_DELAY)
-
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            print(f"Data fetch error ({type(e).__name__}). Retrying in {delay}s...")
-            time.sleep(delay)
-            delay = min(delay * 2, MAX_RETRY_DELAY)
-        except requests.exceptions.RequestException as e:
-            print(f"An unexpected request error occurred: {e}. Retrying in {delay}s...")
-            time.sleep(delay)
-            delay = min(delay * 2, MAX_RETRY_DELAY)
-
-
-# === TELEGRAM SENDER ===
-async def send_to_telegram(date, number, service, otp, message):
-    country_info = get_country_from_number(number)
-    country_parts = country_info.split(' ', 1)
-    country_emoji = country_parts[0]
-    country_name = country_parts[1].split(' / ')[0] if len(country_parts) > 1 else country_parts[0]
-    masked_number = mask_number(number)
-    
-    safe_service = html.escape(service)
-    safe_otp = html.escape(otp)
-    safe_message = html.escape(message)
-
-    title = f"🔔 {country_emoji} <b>{country_name}</b> {safe_service} OТP Received..."
-
-    body_lines = [
-        f"<blockquote>🕰 Time: {date}</blockquote>",
-        f"<blockquote>🌍 Country: {country_info}</blockquote>",
-        f"<blockquote>📱 Service: {safe_service}</blockquote>",
-        f"<blockquote>📞 Number: {masked_number}</blockquote>",
-        f"<blockquote>🔑 OTP: <b>{safe_otp}</b></blockquote>", # MODIFIED: Made OTP bold
-        f"<blockquote>✉️ Full Message:</blockquote>",
-        f"<blockquote># {safe_message}</blockquote>"
-    ]
-    
-    body = "\n".join(body_lines)
-    full_message = f"{title}\n\n{body}"
-
-    try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=full_message,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-        print(f"Message sent for number {masked_number} with OTP {safe_otp}")
-    except Exception as e:
-        print(f"Telegram send error: {e}")
-
-# === MAIN LOOP ===
-async def main_loop():
-    setup_database()
-    if not login():
-        print("Initial login failed. Exiting.")
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user; chat_id = update.effective_chat.id
+    if user.id in ADMIN_IDS:
+        if chat_id not in user_chat_ids: user_chat_ids.add(chat_id)
+        await update.message.reply_text(f"Welcome Admin, {user.first_name}! ЁЯСС Verification bypassed.")
+        await update.message.reply_text("Select A Country To Get Number ЁЯМН", reply_markup=create_country_selection_keyboard())
         return
-    
-    print("Starting to fetch data...")
-    while True:
-        data = fetch_data()
-        if data and 'aaData' in data:
-            for row in reversed(data['aaData']): # MODIFIED: reversed to process oldest first
-                if len(row) < 6: continue
-                
-                date, number, service, message = row[0], row[2], row[3], html.unescape(row[5] or "")
-                
-                # MODIFIED: Improved regex to find more OTP formats
-                match = re.search(r"\b\d{4,8}\b|\b\d{3}[- ]?\d{3}\b", message)
-                
-                otp = match.group() if match else None
-                if otp:
-                    # Clean up OTP (remove spaces or hyphens)
-                    otp = re.sub(r'[- ]', '', otp)
-                    key = f"{number}|{otp}|{service}|{date}" # Made key more unique
-                    
-                    if not is_otp_already_sent(key):
-                        add_otp_to_db(key)
-                        await send_to_telegram(date, number, service, otp, message)
-        
-        await asyncio.sleep(5) # Wait 5 seconds before next fetch
+    if IS_MAINTENANCE_MODE:
+        await update.message.reply_text("Bot is Under Maintenance, please Wait For A while ЁЯФз"); return
+    if chat_id in user_chat_ids:
+        await update.message.reply_text("ржЖржкржирж┐ ржЗрждрж┐ржоржзрзНржпрзЗржЗ ржЖржорж╛ржжрзЗрж░ ржмржЯ ржмрзНржпржмрж╣рж╛рж░ ржХрж░ржЫрзЗржиред")
+        await update.message.reply_text("Select A Country To Get Number ЁЯМН", reply_markup=create_country_selection_keyboard())
+    elif VERIFY_USER:
+        buttons = [[InlineKeyboardButton(link['name'], url=link['url'])] for link in JOIN_LINKS]
+        buttons.append([InlineKeyboardButton("Verify тЬЕ", callback_data="verify_join")])
+        await update.message.reply_text(f"Welcome {user.first_name}! ЁЯСЛ\n\nPlease Join Below to use the bot.", reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        user_chat_ids.add(chat_id)
+        await update.message.reply_text(f"Welcome {user.first_name} to Our Bot! ЁЯОЙ")
+        await update.message.reply_text("Select A Country To Get Number ЁЯМН", reply_markup=create_country_selection_keyboard())
 
-# === START BOT ===
-if __name__ == "__main__":
-    print("Bot started")
+async def verify_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if IS_MAINTENANCE_MODE: await query.answer("Bot is Under Maintenance ЁЯФз", show_alert=True); return
+    user_id = query.from_user.id
+    chat_id = query.message.chat.id
     try:
-        asyncio.run(main_loop())
-    except KeyboardInterrupt:
-        print("\nBot stopped by user.")
+        is_member = all([(await context.bot.get_chat_member(link['id'], user_id)).status in ['member', 'administrator', 'creator'] for link in JOIN_LINKS])
+        if is_member:
+            user_chat_ids.add(chat_id); await query.answer()
+            await query.edit_message_text("Thanks for joining! ЁЯОЙ")
+            await query.message.reply_text("Select A Country To Get Number ЁЯМН", reply_markup=create_country_selection_keyboard())
+        else: await query.answer("тЭМ You haven't joined all channels/groups yet!", show_alert=True)
+    except Exception as e:
+        logger.error(f"Verification error: {e}")
+        await query.answer("An error occurred. Please ensure the bot is an admin in the channels.", show_alert=True)
+
+async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if IS_MAINTENANCE_MODE and query.from_user.id not in ADMIN_IDS:
+        await query.answer("Bot is Under Maintenance ЁЯФз", show_alert=True); return
+    await query.answer()
+    data = query.data
+    chat_id = query.message.chat.id
+    async def assign_new_number(country_key):
+        if chat_id in assigned_numbers:
+            old_num = assigned_numbers.pop(chat_id)['number']
+            if old_num in number_to_user_map: del number_to_user_map[old_num]
+        country_data = NUMBER_DATA.get(country_key)
+        
+        if not country_data or not country_data.get('numbers'):
+            refresh_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Refresh List ЁЯФД", callback_data="refresh_list")]])
+            await query.edit_message_text("Sorry, no numbers are available for this option. ЁЯШФ", reply_markup=refresh_keyboard)
+            return
+
+        new_number = country_data['numbers'].pop(0); country_data['stock'] -= 1
+        assigned_numbers[chat_id] = {'number': new_number, 'country_key': country_key}
+        number_to_user_map[new_number] = chat_id
+        if not country_data['numbers']:
+            button_name = country_data['button_text']; del NUMBER_DATA[country_key]
+            notification = f"тД╣я╕П The file `'{country_key}.txt'` (Button: `'{button_name}'`) is out of stock and has been auto-deleted."
+            for admin_id in ADMIN_IDS:
+                try: await context.bot.send_message(chat_id=admin_id, text=notification)
+                except Exception as e: logger.warning(f"Failed to notify admin {admin_id}: {e}")
+        text = f"{country_data['button_text']} Number Assigned\n\nNumber: <code>{new_number}</code>"
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=create_number_options_keyboard(country_key))
+        
+        # UPDATED: The "Waiting for OTP" message has been removed.
+        # await query.message.reply_text(f"тП│ Waiting for an OTP for <code>{new_number}</code>.", parse_mode="HTML")
+        
+    if data.startswith("country_") or data.startswith("change_num_"):
+        key = data.split("_", 1)[1] if data.startswith("country_") else data.split("_", 2)[2]
+        await assign_new_number(key)
+    elif data == "change_country":
+        await query.edit_message_text("Select A Country To Get Number ЁЯМН", reply_markup=create_country_selection_keyboard())
+    elif data == "refresh_list":
+        try:
+            await query.edit_message_text("Select A Country To Get Number ЁЯМН", reply_markup=create_country_selection_keyboard())
+        except Exception as e:
+            logger.info(f"Refresh button error (might be no change): {e}")
+
+# --- All other admin commands remain the same ---
+
+async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("тЭМ Unauthorized."); return
+    if not context.args:
+        if not NUMBER_DATA: await update.message.reply_text("No files to delete."); return
+        
+        message = "Use `/del file_key` to delete.\n*File key is the filename without .txt*\n\n<b>Available files:</b>\n"
+        for key, data in NUMBER_DATA.items():
+            message += f"тАв File Key: <code>{key}</code> (Button: '{data['button_text']}')\n"
+        await update.message.reply_text(message, parse_mode="HTML")
+    else:
+        key_to_delete = context.args[0].lower().replace('.txt', '')
+        if key_to_delete in NUMBER_DATA:
+            name = NUMBER_DATA.pop(key_to_delete)['button_text']
+            await update.message.reply_text(f"тЬЕ File `'{key_to_delete}.txt'` with button `'{name}'` has been deleted.")
+        else: await update.message.reply_text("тЭМ File not found.")
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id in ADMIN_IDS: await update.message.reply_text("тЬЕ Admin mode activated.")
+    else: await update.message.reply_text("тЭМ Unauthorized.")
+
+async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: return ConversationHandler.END
+    await update.message.reply_text("Send the .txt file with numbers."); return WAITING_FOR_FILE
+
+async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    if not doc or not doc.file_name.endswith('.txt'):
+        await update.message.reply_text("Invalid file. Please send a .txt file."); return WAITING_FOR_FILE
+    file_key = doc.file_name.lower().replace('.txt', '')
+    if file_key in NUMBER_DATA: await update.message.reply_text("тЪая╕П A file with this name already exists.")
+    file = await doc.get_file(); content = await file.download_as_bytearray()
+    numbers = [f"+{line.strip()}" for line in content.decode('utf-8').splitlines() if line.strip()]
+    if not numbers: await update.message.reply_text("File is empty."); return ConversationHandler.END
+    context.user_data.update({'temp_numbers': numbers, 'temp_file_key': file_key})
+    await update.message.reply_text(f"тЬЕ Found {len(numbers)} numbers. Now, provide the button name."); return WAITING_FOR_NAME
+
+async def receive_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text; nums = context.user_data.get('temp_numbers'); key = context.user_data.get('temp_file_key')
+    initial_count = len(nums)
+    NUMBER_DATA[key] = {'button_text': name, 'numbers': nums, 'stock': initial_count, 'initial_stock': initial_count}
+    await update.message.reply_text(f"тЬЕ Button '{name}' created with stock {initial_count}.")
+    context.user_data.clear(); return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Operation cancelled."); return ConversationHandler.END
+
+async def used_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("тЭМ Unauthorized."); return
+    if not NUMBER_DATA: await update.message.reply_text("No number files are loaded."); return
+    message = "<b>ЁЯУК Used Number Report</b>\n\n"
+    for key, data in NUMBER_DATA.items():
+        used = data.get('initial_stock', 0) - data.get('stock', 0)
+        message += f"тАв In `'{key}.txt'` (Button: '{data['button_text']}') Used = <b>{used}</b>\n"
+    await update.message.reply_text(message, parse_mode="HTML")
+
+async def unused_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("тЭМ Unauthorized."); return
+    if not NUMBER_DATA: await update.message.reply_text("No number files are loaded."); return
+    message = "<b>ЁЯУж Unused Number (Stock) Report</b>\n\n"
+    for key, data in NUMBER_DATA.items():
+        message += f"тАв In `'{key}.txt'` (Button: '{data['button_text']}') Unused = <b>{data.get('stock', 0)}</b>\n"
+    await update.message.reply_text(message, parse_mode="HTML")
+
+async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global IS_MAINTENANCE_MODE
+    if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("тЭМ Unauthorized."); return
+    IS_MAINTENANCE_MODE = True; await update.message.reply_text("тЬЕ Bot is now in maintenance mode.")
+
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global IS_MAINTENANCE_MODE
+    if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("тЭМ Unauthorized."); return
+    IS_MAINTENANCE_MODE = False; await update.message.reply_text("тЬЕ Bot has been resumed.")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: await update.message.reply_text("тЭМ Unauthorized."); return
+    if not NUMBER_DATA: await update.message.reply_text("No number files are currently available."); return
+    message = "<b>ЁЯУЛ Available List</b>\n\n"
+    for data in NUMBER_DATA.values(): message += f"тАв {data['button_text']}\n"
+    await update.message.reply_text(message, parse_mode="HTML")
+
+async def poll_sms(application: Application):
+    while True:
+        await asyncio.sleep(POLL_INTERVAL)
+        if not number_to_user_map: continue
+        try:
+            messages = await fetch_sms()
+            if not messages: continue
+            for sms in reversed(messages):
+                incoming_number = sms['num'] if sms['num'].startswith('+') else f"+{sms['num']}"
+                if incoming_number in number_to_user_map:
+                    sms_id = f"{sms.get('dt','')}_{incoming_number}_{hash(sms.get('message',''))}"
+                    if sms_id in seen_sms: continue
+                    seen_sms.add(sms_id)
+                    target_chat_id = number_to_user_map.pop(incoming_number)
+                    if target_chat_id in assigned_numbers: del assigned_numbers[target_chat_id]
+                    otp = extract_otp(sms["message"])
+                    text = (f"тЬЕ <b>NEW OTP DETECTED</b>\n\n<b>тМЪ Time:</b> {sms['dt']}\n<b>тЪЩя╕П Service:</b> {sms['cli']}\n"
+                            f"<b>ЁЯУ▒ Number:</b> <code>{incoming_number}</code>\n<b>ЁЯФС OTP:</b> <code>{otp}</code>\n\n"
+                            f"<b>ЁЯУе Full Message:</b>\n<pre>{sms['message']}</pre>")
+                    asyncio.create_task(send_and_schedule_deletion(application.bot, target_chat_id, text, OTP_MESSAGE_DELETE_DELAY))
+                    await application.bot.send_message(chat_id=target_chat_id, text="Your number has been used and is now released. Select a new one. ЁЯМН")
+        except Exception as e:
+            logger.error(f"Error in poll_sms loop: {e}")
+
+async def main() -> None:
+    if not all([BOT_TOKEN, SMS_API_TOKEN, ADMIN_IDS]):
+        raise RuntimeError("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    add_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("add", add_start)],
+        states={
+            WAITING_FOR_FILE: [MessageHandler(filters.Document.ALL, receive_file)],
+            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_button_name)],
+        }, fallbacks=[CommandHandler("cancel", cancel)])
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(add_conv_handler)
+    app.add_handler(CommandHandler("del", delete_command))
+    app.add_handler(CommandHandler("used", used_command))
+    app.add_handler(CommandHandler("unused", unused_command))
+    app.add_handler(CommandHandler("pause", pause_command))
+    app.add_handler(CommandHandler("resume", resume_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CallbackQueryHandler(verify_button_callback, pattern="^verify_join$"))
+    app.add_handler(CallbackQueryHandler(user_button_handler))
+
+    asyncio.create_task(poll_sms(app))
+    logger.info("Bot is starting...")
+    try:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        await asyncio.Event().wait()
+    finally:
+        if app.updater and app.updater.running: await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+
+if __name__ == "__main__":
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(main())
+        else:
+            asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped.")
+    except Exception as e:
+        logger.critical(f"тЭМ Bot failed to start: {e}")
