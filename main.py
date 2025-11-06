@@ -327,9 +327,12 @@ async def post_init(application: Application):
     """A task to run after the bot is initialized, to start the background job."""
     asyncio.create_task(poll_sms(application))
 
-async def main() -> None:
+# --- পরিবর্তন এখানে ---
+# main ফাংশনটিকে async থেকে সাধারণ def ফাংশনে পরিবর্তন করা হয়েছে
+def main() -> None:
     if not all([BOT_TOKEN, SMS_API_TOKEN, ADMIN_IDS]):
-        raise RuntimeError("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
+        logger.critical("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
+        return # return instead of raise to avoid unhandled exception
     
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     
@@ -354,11 +357,14 @@ async def main() -> None:
     app.add_handler(CallbackQueryHandler(user_button_handler))
     
     logger.info("Bot is starting...")
-    await app.run_polling()
+    # await app.run_polling() থেকে await সরিয়ে দেওয়া হয়েছে
+    app.run_polling()
 
+# --- পরিবর্তন এখানে ---
+# asyncio.run() সরিয়ে দিয়ে সরাসরি main() ফাংশন কল করা হয়েছে
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot gracefully stopped.")
     except Exception as e:
