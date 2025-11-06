@@ -1,381 +1,204 @@
 import asyncio
-import logging
+import requests
 import os
-import aiohttp
 import re
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, ContextTypes, CallbackQueryHandler,
-    ConversationHandler, MessageHandler, filters
-)
-from telegram.request import HTTPXRequest
+import html
+import sqlite3
+import time
+import sys
+from datetime import datetime
+from telegram import Bot
 
-# --- CONFIGURATION ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-SMS_API_URL = "http://174.138.2.82/crapi/had/viewstats"
-SMS_API_TOKEN = os.environ.get("SMS_API_TOKEN")
-POLL_INTERVAL = 8
-RECORDS = 50
-OTP_MESSAGE_DELETE_DELAY = 180
+# === CONFIGURATION ===
+# আপনার ব্যক্তিগত তথ্যগুলো এখন Environment Variable থেকে লোড করা হচ্ছে
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
+API_TOKEN = os.getenv('API_TOKEN') # নতুন: আপনার API টোকেন এখানে লোড হবে
 
-# --- ADMIN CONFIGURATION ---
-ADMIN_IDS = [int(admin_id) for admin_id in os.environ.get("ADMIN_IDS", "").split(',') if admin_id]
+# Check if all required environment variables are set
+if not all([BOT_TOKEN, CHAT_ID, API_TOKEN]):
+    print("ত্রুটি: প্রয়োজনীয় Environment Variables (BOT_TOKEN, CHAT_ID, API_TOKEN) সেট করা নেই।")
+    sys.exit(1) # Exit the script with an error code
 
-# --- USER VERIFICATION CONFIGURATION ---
-VERIFY_USER = True
-JOIN_LINKS = [
-    {'name': '📢 Our Channel', 'url': 'https://t.me/+bey252hj-qU5ZGNl', 'id': '-1002408654815'},
-    {'name': '💬 Discussion Group', 'url': 'https://t.me/+1mrti6CrDyQ5MDY1', 'id': '-1002733230903'}
-]
+# নতুন API URL
+API_URL = "http://147.135.212.197/crapi/had/viewstats"
 
-# --- LOGGING SETUP ---
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
+# === COUNTRY CODE MAP ===
+COUNTRY_MAP = {
+    '1': '🇺🇸 USA / Canada', '7': '🇷🇺 Russia / Kazakhstan', '20': '🇪🇬 Egypt', '27': '🇿🇦 South Africa',
+    '30': '🇬🇷 Greece', '31': '🇳🇱 Netherlands', '32': '🇧🇪 Belgium', '33': '🇫🇷 France', '34': '🇪🇸 Spain',
+    '36': '🇭🇺 Hungary', '39': '🇮🇹 Italy', '40': '🇷🇴 Romania', '41': '🇨🇭 Switzerland', '43': '🇦🇹 Austria',
+    '44': '🇬🇧 United Kingdom', '45': '🇩🇰 Denmark', '46': '🇸🇪 Sweden', '47': '🇳🇴 Norway', '48': '🇵🇱 Poland',
+    '49': '🇩🇪 Germany', '51': '🇵🇪 Peru', '52': '🇲🇽 Mexico', '53': '🇨🇺 Cuba', '54': '🇦🇷 Argentina',
+    '55': '🇧🇷 Brazil', '56': '🇨🇱 Chile', '57': '🇨🇴 Colombia', '58': '🇻🇪 Venezuela', '60': '🇲🇾 Malaysia',
+    '61': '🇦🇺 Australia', '62': '🇮🇩 Indonesia', '63': '🇵🇭 Philippines', '64': '🇳🇿 New Zealand',
+    '65': '🇸🇬 Singapore', '66': '🇹🇭 Thailand', '81': '🇯🇵 Japan', '82': '🇰🇷 South Korea', '84': '🇻🇳 Vietnam',
+    '86': '🇨🇳 China', '90': '🇹🇷 Turkey', '91': '🇮🇳 India', '92': '🇵🇰 Pakistan', '93': '🇦🇫 Afghanistan',
+    '94': '🇱🇰 Sri Lanka', '95': '🇲🇲 Myanmar', '98': '🇮🇷 Iran', '211': '🇸🇸 South Sudan', '212': '🇲🇦 Morocco',
+    '213': '🇩🇿 Algeria', '216': '🇹🇳 Tunisia', '218': '🇱🇾 Libya', '220': '🇬🇲 Gambia', '221': '🇸🇳 Senegal',
+    '222': '🇲🇷 Mauritania', '223': '🇲🇱 Mali', '224': '🇬🇳 Guinea', '225': '🇨🇮 Côte d\'Ivoire', '226': '🇧🇫 Burkina Faso',
+    '227': '🇳🇪 Niger', '228': '🇹🇬 Togo', '229': '🇧🇯 Benin', '230': '🇲🇺 Mauritius', '231': '🇱🇷 Liberia',
+    '232': '🇸🇱 Sierra Leone', '233': '🇬🇭 Ghana', '234': '🇳🇬 Nigeria', '235': '🇹🇩 Chad', '236': '🇨🇫 Central African Republic',
+    '237': '🇨🇲 Cameroon', '238': '🇨🇻 Cape Verde', '239': '🇸🇹 Sao Tome & Principe', '240': '🇬🇶 Equatorial Guinea',
+    '241': '🇬🇦 Gabon', '242': '🇨🇬 Congo', '243': '🇨🇩 DR Congo', '244': '🇦🇴 Angola', '249': '🇸🇩 Sudan',
+    '250': '🇷🇼 Rwanda', '251': '🇪🇹 Ethiopia', '252': '🇸🇴 Somalia', '253': '🇩🇯 Djibouti', '254': '🇰🇪 Kenya',
+    '255': '🇹🇿 Tanzania', '256': '🇺🇬 Uganda', '257': '🇧🇮 Burundi', '258': '🇲🇿 Mozambique', '260': '🇿🇲 Zambia',
+    '261': '🇲🇬 Madagascar', '263': '🇿🇼 Zimbabwe', '264': '🇳🇦 Namibia', '265': '🇲🇼 Malawi', '266': '🇱🇸 Lesotho',
+    '267': '🇧🇼 Botswana', '268': '🇸🇿 Eswatini', '269': '🇰🇲 Comoros', '290': '🇸🇭 Saint Helena', '291': '🇪🇷 Eritrea',
+    '297': '🇦🇼 Aruba', '298': '🇫🇴 Faroe Islands', '299': '🇬🇱 Greenland', '350': '🇬🇮 Gibraltar', '351': '🇵🇹 Portugal',
+    '352': '🇱🇺 Luxembourg', '353': '🇮🇪 Ireland', '354': '🇮🇸 Iceland', '355': '🇦🇱 Albania', '356': '🇲🇹 Malta',
+    '357': '🇨🇾 Cyprus', '358': '🇫🇮 Finland', '359': '🇧🇬 Bulgaria', '370': '🇱🇹 Lithuania', '371': '🇱🇻 Latvia',
+    '372': '🇪🇪 Estonia', '373': '🇲🇩 Moldova', '374': '🇦🇲 Armenia', '375': '🇧🇾 Belarus', '376': '🇦🇩 Andorra',
+    '377': '🇲🇨 Monaco', '378': '🇸🇲 San Marino', '380': '🇺🇦 Ukraine', '381': '🇷🇸 Serbia', '382': '🇲🇪 Montenegro',
+    '383': '🇽🇰 Kosovo', '385': '🇭🇷 Croatia', '386': '🇸🇮 Slovenia', '387': '🇧🇦 Bosnia & Herzegovina',
+    '389': '🇲🇰 North Macedonia', '420': '🇨🇿 Czech Republic', '421': '🇸🇰 Slovakia', '423': '🇱🇮 Liechtenstein',
+    '852': '🇭🇰 Hong Kong', '853': '🇲🇴 Macau', '855': '🇰🇭 Cambodia', '856': '🇱🇦 Laos', '880': '🇧🇩 Bangladesh',
+    '886': '🇹🇼 Taiwan', '960': '🇲🇻 Maldives', '961': '🇱🇧 Lebanon', '962': '🇯🇴 Jordan', '963': '🇸🇾 Syria',
+    '964': '🇮🇶 Iraq', '965': '🇰🇼 Kuwait', '966': '🇸🇦 Saudi Arabia', '967': '🇾🇪 Yemen', '968': '🇴🇲 Oman',
+    '970': '🇵🇸 Palestine', '971': '🇦🇪 UAE', '972': '🇮🇱 Israel', '973': '🇧🇭 Bahrain', '974': '🇶🇦 Qatar',
+    '975': '🇧🇹 Bhutan', '976': '🇲🇳 Mongolia', '977': '🇳🇵 Nepal', '992': '🇹🇯 Tajikistan', '993': '🇹🇲 Turkmenistan',
+    '994': '🇦🇿 Azerbaijan', '995': '🇬🇪 Georgia', '996': '🇰🇬 Kyrgyzstan', '998': '🇺🇿 Uzbekistan'
+}
 
-# --- GLOBAL DATA STORE & STATE ---
-NUMBER_DATA = {}
-seen_sms = set()
-user_chat_ids = set()
-assigned_numbers = {}
-number_to_user_map = {}
-IS_MAINTENANCE_MODE = False
-WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
+# Telegram bot
+bot = Bot(token=BOT_TOKEN)
 
-# --- HELPER & UI FUNCTIONS ---
-def extract_otp(message: str) -> str:
-    matches = re.findall(r"\b\d{4,8}\b", message)
-    return matches[0] if matches else "N/A"
+# === DATABASE FUNCTIONS ===
+DB_NAME = "otp_history.db"
+def setup_database():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('CREATE TABLE IF NOT EXISTS sent_otps (otp_key TEXT PRIMARY KEY, sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    conn.commit()
+    conn.close()
 
-async def send_and_schedule_deletion(bot, chat_id, text, delay_seconds):
+def is_otp_already_sent(otp_key):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM sent_otps WHERE otp_key = ?", (otp_key,))
+    exists = cursor.fetchone()
+    conn.close()
+    return exists is not None
+
+def add_otp_to_db(otp_key):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO sent_otps (otp_key) VALUES (?)", (otp_key,))
+    conn.commit()
+    conn.close()
+
+# === HELPER FUNCTIONS ===
+def get_country_from_number(number: str) -> str:
+    for code in sorted(COUNTRY_MAP.keys(), key=len, reverse=True):
+        if number.startswith(code):
+            return COUNTRY_MAP[code]
+    return '🌍 Unknown Country'
+
+def mask_number(number_str: str) -> str:
+    if len(number_str) > 9:
+        return f"{number_str[:5]}****{number_str[-4:]}"
+    return number_str
+
+# === CORE NETWORK FUNCTION (UPDATED) ===
+def fetch_data():
+    """Fetches the latest records from the new API."""
+    params = {
+        'token': API_TOKEN,
+        'records': 100  # Fetch latest 100 records to avoid missing any
+    }
     try:
-        message = await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-        await asyncio.sleep(delay_seconds)
-        await bot.delete_message(chat_id=chat_id, message_id=message.message_id)
-    except Exception:
-        pass
+        # Using simple requests.get as session is no longer needed for login
+        resp = requests.get(API_URL, params=params, timeout=15)
+        resp.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
 
-def create_country_selection_keyboard() -> InlineKeyboardMarkup:
-    buttons = []
-    if not NUMBER_DATA:
-        buttons.append([InlineKeyboardButton("No numbers available 😔", callback_data="no_op")])
-    else:
-        for key, data in NUMBER_DATA.items():
-            buttons.append([InlineKeyboardButton(f"{data['button_text']} (Stock: {data.get('stock', 0)})", callback_data=f"country_{key}")])
-    buttons.append([InlineKeyboardButton("Refresh List 🔄", callback_data="refresh_list")])
-    return InlineKeyboardMarkup(buttons)
-
-def create_number_options_keyboard(country_key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Change Number 🔄", callback_data=f"change_num_{country_key}")],
-        [InlineKeyboardButton("Change Country 🌍", callback_data="change_country")]
-    ])
-
-async def fetch_sms():
-    params = {"token": SMS_API_TOKEN, "records": RECORDS}
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(SMS_API_URL, params=params, timeout=15) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                return data.get("data", []) if data.get("status") == "success" else []
-        except Exception as e:
-            logger.error(f"SMS fetch error: {e}")
-            return []
-
-# --- USER-FACING HANDLERS ---
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    if user.id in ADMIN_IDS:
-        if chat_id not in user_chat_ids: user_chat_ids.add(chat_id)
-        await update.message.reply_text(f"Welcome Admin, {user.first_name}! 👑 Verification bypassed.")
-        await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
-        return
-    if IS_MAINTENANCE_MODE:
-        await update.message.reply_text("Bot is Under Maintenance, please Wait For A while 🔧")
-        return
-    if chat_id in user_chat_ids:
-        await update.message.reply_text("আপনি ইতিমধ্যেই আমাদের বট ব্যবহার করছেন।")
-        await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
-    elif VERIFY_USER:
-        buttons = [[InlineKeyboardButton(link['name'], url=link['url'])] for link in JOIN_LINKS]
-        buttons.append([InlineKeyboardButton("Verify ✅", callback_data="verify_join")])
-        await update.message.reply_text(f"Welcome {user.first_name}! 👋\n\nPlease Join Below to use the bot.", reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        user_chat_ids.add(chat_id)
-        await update.message.reply_text(f"Welcome {user.first_name} to Our Bot! 🎉")
-        await update.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
-
-async def verify_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if IS_MAINTENANCE_MODE:
-        await query.answer("Bot is Under Maintenance 🔧", show_alert=True)
-        return
-    user_id = query.from_user.id
-    chat_id = query.message.chat.id
-    try:
-        is_member = all([(await context.bot.get_chat_member(link['id'], user_id)).status in ['member', 'administrator', 'creator'] for link in JOIN_LINKS])
-        if is_member:
-            user_chat_ids.add(chat_id)
-            await query.answer()
-            await query.edit_message_text("Thanks for joining! 🎉")
-            await query.message.reply_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
+        data = resp.json()
+        if data.get('status') == 'success':
+            return data
         else:
-            await query.answer("❌ You haven't joined all channels/groups yet!", show_alert=True)
+            print(f"API Error: {data.get('msg', 'Unknown error')}")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Network error during data fetch: {e}")
+        return None
+    except ValueError: # Catches JSON decoding errors
+        print("Failed to decode JSON from response.")
+        return None
+
+# === TELEGRAM SENDER ===
+async def send_to_telegram(date, number, service, otp, message):
+    country_info = get_country_from_number(number)
+    country_parts = country_info.split(' ', 1)
+    country_emoji = country_parts[0]
+    country_name = country_parts[1].split(' / ')[0]
+    masked_number = mask_number(number)
+    
+    safe_service = html.escape(service)
+    safe_otp = html.escape(otp)
+    safe_message = html.escape(message)
+
+    title = f"🔔 {country_emoji} <b>{country_name}</b> {safe_service} OТP Received..."
+
+    body_lines = [
+        f"<blockquote>🕰 Time: {date}</blockquote>",
+        f"<blockquote>🌍 Country: {country_info}</blockquote>",
+        f"<blockquote>📱 Service: {safe_service}</blockquote>",
+        f"<blockquote>📞 Number: {masked_number}</blockquote>",
+        f"<blockquote>🔑 OTP: {safe_otp}</blockquote>",
+        f"<blockquote>✉️ Full Message:</blockquote>",
+        f"<blockquote># {safe_message}</blockquote>"
+    ]
+    
+    body = "\n".join(body_lines)
+    full_message = f"{title}\n\n{body}"
+
+    try:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=full_message,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        print("Message Sent")
     except Exception as e:
-        logger.error(f"Verification error: {e}")
-        await query.answer("An error occurred. Please ensure the bot is an admin in the channels.", show_alert=True)
+        print(f"Telegram send error: {e}")
 
-async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if IS_MAINTENANCE_MODE and query.from_user.id not in ADMIN_IDS:
-        await query.answer("Bot is Under Maintenance 🔧", show_alert=True)
-        return
-    await query.answer()
-    data = query.data
-    chat_id = query.message.chat.id
+# === MAIN LOOP (UPDATED) ===
+async def main_loop():
+    setup_database()
+    print("Bot started with API integration.")
     
-    async def assign_new_number(country_key):
-        if chat_id in assigned_numbers:
-            old_num = assigned_numbers.pop(chat_id)['number']
-            if old_num in number_to_user_map: del number_to_user_map[old_num]
-        
-        country_data = NUMBER_DATA.get(country_key)
-        
-        if not country_data or not country_data.get('numbers'):
-            refresh_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Refresh List 🔄", callback_data="refresh_list")]])
-            await query.edit_message_text("Sorry, no numbers are available for this option. 😔", reply_markup=refresh_keyboard)
-            return
-
-        new_number = country_data['numbers'].pop(0)
-        country_data['stock'] -= 1
-        assigned_numbers[chat_id] = {'number': new_number, 'country_key': country_key}
-        number_to_user_map[new_number] = chat_id
-        
-        if not country_data['numbers']:
-            button_name = country_data['button_text']
-            del NUMBER_DATA[country_key]
-            notification = f"ℹ️ The file `'{country_key}.txt'` (Button: `'{button_name}'`) is out of stock and has been auto-deleted."
-            for admin_id in ADMIN_IDS:
-                try:
-                    await context.bot.send_message(chat_id=admin_id, text=notification)
-                except Exception as e:
-                    logger.warning(f"Failed to notify admin {admin_id}: {e}")
-
-        text = f"{country_data['button_text']} Number Assigned\n\nNumber: <code>{new_number}</code>"
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=create_number_options_keyboard(country_key))
-        
-    if data.startswith("country_") or data.startswith("change_num_"):
-        key = data.split("_", 1)[1] if data.startswith("country_") else data.split("_", 2)[2]
-        await assign_new_number(key)
-    elif data == "change_country":
-        await query.edit_message_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
-    elif data == "refresh_list":
-        try:
-            await query.edit_message_text("Select A Country To Get Number 🌍", reply_markup=create_country_selection_keyboard())
-        except Exception as e:
-            logger.info(f"Refresh button error (might be no change): {e}")
-
-# --- ADMIN COMMANDS ---
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id in ADMIN_IDS:
-        await update.message.reply_text("✅ Admin mode activated.")
-    else:
-        await update.message.reply_text("❌ Unauthorized.")
-
-async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS: return ConversationHandler.END
-    await update.message.reply_text("Send the .txt file with numbers.")
-    return WAITING_FOR_FILE
-
-async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    if not doc or not doc.file_name.endswith('.txt'):
-        await update.message.reply_text("Invalid file. Please send a .txt file.")
-        return WAITING_FOR_FILE
-    file_key = doc.file_name.lower().replace('.txt', '')
-    if file_key in NUMBER_DATA:
-        await update.message.reply_text("⚠️ A file with this name already exists.")
-    file = await doc.get_file()
-    content = await file.download_as_bytearray()
-    numbers = [f"+{line.strip()}" for line in content.decode('utf-8').splitlines() if line.strip()]
-    if not numbers:
-        await update.message.reply_text("File is empty.")
-        return ConversationHandler.END
-    context.user_data.update({'temp_numbers': numbers, 'temp_file_key': file_key})
-    await update.message.reply_text(f"✅ Found {len(numbers)} numbers. Now, provide the button name.")
-    return WAITING_FOR_NAME
-
-async def receive_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text
-    nums = context.user_data.get('temp_numbers')
-    key = context.user_data.get('temp_file_key')
-    initial_count = len(nums)
-    NUMBER_DATA[key] = {'button_text': name, 'numbers': nums, 'stock': initial_count, 'initial_stock': initial_count}
-    await update.message.reply_text(f"✅ Button '{name}' created with stock {initial_count}.")
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled.")
-    return ConversationHandler.END
-
-async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    if not context.args:
-        if not NUMBER_DATA:
-            await update.message.reply_text("No files to delete.")
-            return
-        message = "Use `/del file_key` to delete.\n*File key is the filename without .txt*\n\n<b>Available files:</b>\n"
-        for key, data in NUMBER_DATA.items():
-            message += f"• File Key: <code>{key}</code> (Button: '{data['button_text']}')\n"
-        await update.message.reply_text(message, parse_mode="HTML")
-    else:
-        key_to_delete = context.args[0].lower().replace('.txt', '')
-        if key_to_delete in NUMBER_DATA:
-            name = NUMBER_DATA.pop(key_to_delete)['button_text']
-            await update.message.reply_text(f"✅ File `'{key_to_delete}.txt'` with button `'{name}'` has been deleted.")
-        else:
-            await update.message.reply_text("❌ File not found.")
-
-async def used_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    if not NUMBER_DATA:
-        await update.message.reply_text("No number files are loaded.")
-        return
-    message = "<b>📊 Used Number Report</b>\n\n"
-    for key, data in NUMBER_DATA.items():
-        used = data.get('initial_stock', 0) - data.get('stock', 0)
-        message += f"• In `'{key}.txt'` (Button: '{data['button_text']}') Used = <b>{used}</b>\n"
-    await update.message.reply_text(message, parse_mode="HTML")
-
-async def unused_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    if not NUMBER_DATA:
-        await update.message.reply_text("No number files are loaded.")
-        return
-    message = "<b>📦 Unused Number (Stock) Report</b>\n\n"
-    for key, data in NUMBER_DATA.items():
-        message += f"• In `'{key}.txt'` (Button: '{data['button_text']}') Unused = <b>{data.get('stock', 0)}</b>\n"
-    await update.message.reply_text(message, parse_mode="HTML")
-
-async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global IS_MAINTENANCE_MODE
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    IS_MAINTENANCE_MODE = True
-    await update.message.reply_text("✅ Bot is now in maintenance mode.")
-
-async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global IS_MAINTENANCE_MODE
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    IS_MAINTENANCE_MODE = False
-    await update.message.reply_text("✅ Bot has been resumed.")
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    if not NUMBER_DATA:
-        await update.message.reply_text("No number files are currently available.")
-        return
-    message = "<b>📋 Available List</b>\n\n"
-    for data in NUMBER_DATA.values():
-        message += f"• {data['button_text']}\n"
-    await update.message.reply_text(message, parse_mode="HTML")
-
-# --- BACKGROUND TASK ---
-async def poll_sms(application: Application):
-    """Polls the SMS API and sends OTPs to users."""
     while True:
-        await asyncio.sleep(POLL_INTERVAL)
-        if not number_to_user_map:
-            continue
-        try:
-            messages = await fetch_sms()
-            if not messages:
-                continue
-            for sms in reversed(messages):
-                incoming_number = sms['num'] if sms['num'].startswith('+') else f"+{sms['num']}"
-                if incoming_number in number_to_user_map:
-                    sms_id = f"{sms.get('dt','')}_{incoming_number}_{hash(sms.get('message',''))}"
-                    if sms_id in seen_sms:
-                        continue
-                    seen_sms.add(sms_id)
-                    target_chat_id = number_to_user_map.pop(incoming_number)
-                    if target_chat_id in assigned_numbers:
-                        del assigned_numbers[target_chat_id]
-                    otp = extract_otp(sms["message"])
-                    text = (f"✅ <b>NEW OTP DETECTED</b>\n\n<b>⌚ Time:</b> {sms['dt']}\n<b>⚙️ Service:</b> {sms['cli']}\n"
-                            f"<b>📱 Number:</b> <code>{incoming_number}</code>\n<b>🔑 OTP:</b> <code>{otp}</code>\n\n"
-                            f"<b>📥 Full Message:</b>\n<pre>{sms['message']}</pre>")
-                    asyncio.create_task(send_and_schedule_deletion(application.bot, target_chat_id, text, OTP_MESSAGE_DELETE_DELAY))
-                    await application.bot.send_message(chat_id=target_chat_id, text="Your number has been used and is now released. Select a new one. 🌍")
-        except Exception as e:
-            logger.error(f"Error in poll_sms loop: {e}")
+        data = fetch_data()
+        # Process data if fetch was successful and status is 'success'
+        if data and data.get('status') == 'success':
+            # Reverse the list to process oldest OTPs first
+            for item in reversed(data.get('data', [])):
+                # Extract data based on new JSON structure
+                date = item.get('dt')
+                number = item.get('num')
+                service = item.get('cli')
+                message = html.unescape(item.get('message', ''))
 
-# --- APPLICATION SETUP & RUN ---
-async def post_init(application: Application):
-    """A task to run after the bot is initialized, to start the background job."""
-    asyncio.create_task(poll_sms(application))
+                if not all([date, number, service, message]):
+                    continue # Skip if essential data is missing
 
-# --- পরিবর্তন এখানে ---
-# একটি নতুন এরর হ্যান্ডলার ফাংশন যোগ করা হয়েছে
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error to help with debugging."""
-    logger.error("Exception while handling an update:", exc_info=context.error)
+                # OTP finding logic remains the same
+                match = re.search(r"\b\d{3}-\d{3}\b|\b\d{4,8}\b", message) # Regex slightly improved
+                otp = match.group() if match else None
+                
+                if otp:
+                    # Database check remains the same
+                    key = f"{number}|{otp}|{date}" # Adding date to key for better uniqueness
+                    if not is_otp_already_sent(key):
+                        add_otp_to_db(key)
+                        await send_to_telegram(date, number, service, otp, message)
+        
+        await asyncio.sleep(5) # Wait for 5 seconds before next API call
 
-
-def main() -> None:
-    if not all([BOT_TOKEN, SMS_API_TOKEN, ADMIN_IDS]):
-        logger.critical("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
-        return
-    
-    # --- পরিবর্তন এখানে ---
-    # নেটওয়ার্কের ধীরগতির জন্য টাইমআউট বাড়ানো হয়েছে
-    request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).request(request).build()
-    
-    # Add handlers
-    add_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start)],
-        states={
-            WAITING_FOR_FILE: [MessageHandler(filters.Document.ALL, receive_file)],
-            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_button_name)],
-        }, fallbacks=[CommandHandler("cancel", cancel)])
-    
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(add_conv_handler)
-    app.add_handler(CommandHandler("del", delete_command))
-    app.add_handler(CommandHandler("used", used_command))
-    app.add_handler(CommandHandler("unused", unused_command))
-    app.add_handler(CommandHandler("pause", pause_command))
-    app.add_handler(CommandHandler("resume", resume_command))
-    app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CallbackQueryHandler(verify_button_callback, pattern="^verify_join$"))
-    app.add_handler(CallbackQueryHandler(user_button_handler))
-    
-    # --- পরিবর্তন এখানে ---
-    # এরর হ্যান্ডলারটি অ্যাপ্লিকেশনে যোগ করা হয়েছে
-    app.add_error_handler(error_handler)
-    
-    logger.info("Bot is starting...")
-    app.run_polling()
-
+# === START BOT ===
 if __name__ == "__main__":
     try:
-        main()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot gracefully stopped.")
-    except Exception as e:
-        logger.critical(f"❌ Bot failed to start: {e}")
+        asyncio.run(main_loop())
+    except KeyboardInterrupt:
+        print("\nBot stopped.")
