@@ -23,7 +23,7 @@ OTP_MESSAGE_DELETE_DELAY = 180  # 3 minutes
 ADMIN_IDS = [int(admin_id) for admin_id in os.environ.get("ADMIN_IDS", "").split(',') if admin_id]
 
 # --- USER VERIFICATION CONFIGURATION ---
-VERIFY_USER = False 
+VERIFY_USER = False
 JOIN_LINKS = [
     {'name': '📢 Our Channel', 'url': 'https://t.me/your_channel_username', 'id': '@your_channel_username'},
     {'name': '💬 Discussion Group', 'url': 'https://t.me/your_group_username', 'id': '@your_group_username'}
