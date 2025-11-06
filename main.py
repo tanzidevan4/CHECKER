@@ -8,6 +8,7 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes, CallbackQueryHandler,
     ConversationHandler, MessageHandler, filters
 )
+from telegram.request import HTTPXRequest
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -328,13 +329,21 @@ async def post_init(application: Application):
     asyncio.create_task(poll_sms(application))
 
 # --- পরিবর্তন এখানে ---
-# main ফাংশনটিকে async থেকে সাধারণ def ফাংশনে পরিবর্তন করা হয়েছে
+# একটি নতুন এরর হ্যান্ডলার ফাংশন যোগ করা হয়েছে
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error to help with debugging."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+
 def main() -> None:
     if not all([BOT_TOKEN, SMS_API_TOKEN, ADMIN_IDS]):
         logger.critical("Fatal: BOT_TOKEN, SMS_API_TOKEN, and ADMIN_IDS must be set.")
-        return # return instead of raise to avoid unhandled exception
+        return
     
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    # --- পরিবর্তন এখানে ---
+    # নেটওয়ার্কের ধীরগতির জন্য টাইমআউট বাড়ানো হয়েছে
+    request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).request(request).build()
     
     # Add handlers
     add_conv_handler = ConversationHandler(
@@ -356,12 +365,13 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(verify_button_callback, pattern="^verify_join$"))
     app.add_handler(CallbackQueryHandler(user_button_handler))
     
+    # --- পরিবর্তন এখানে ---
+    # এরর হ্যান্ডলারটি অ্যাপ্লিকেশনে যোগ করা হয়েছে
+    app.add_error_handler(error_handler)
+    
     logger.info("Bot is starting...")
-    # await app.run_polling() থেকে await সরিয়ে দেওয়া হয়েছে
     app.run_polling()
 
-# --- পরিবর্তন এখানে ---
-# asyncio.run() সরিয়ে দিয়ে সরাসরি main() ফাংশন কল করা হয়েছে
 if __name__ == "__main__":
     try:
         main()
